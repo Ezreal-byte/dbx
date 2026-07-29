@@ -1,4 +1,5 @@
 import { withEnglishFallback } from "./fallback";
+import { dockerMessages } from "./dockerMessages";
 
 export default withEnglishFallback({
   app: {
@@ -4492,6 +4493,7 @@ export default withEnglishFallback({
     exportCancelled: "匯出已取消",
     runInBackground: "背景執行",
   },
+  docker: dockerMessages["zh-TW"],
   nacos: {
     dashboard: "儀表板",
     dashboardTitle: "運行儀表板",

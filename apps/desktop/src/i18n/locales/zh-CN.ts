@@ -1,4 +1,5 @@
 import { withEnglishFallback } from "./fallback";
+import { dockerMessages } from "./dockerMessages";
 
 export default withEnglishFallback({
   app: {
@@ -6042,6 +6043,7 @@ export default withEnglishFallback({
     presetSchema: "Schema 最新版本",
     presetSchemaDesc: "查看主题当前 schema 定义",
   },
+  docker: dockerMessages["zh-CN"],
   nacos: {
     dashboard: "大盘",
     dashboardTitle: "运行大盘",

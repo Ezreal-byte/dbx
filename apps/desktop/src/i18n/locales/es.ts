@@ -1,4 +1,5 @@
 import { withEnglishFallback } from "./fallback";
+import { dockerMessages } from "./dockerMessages";
 
 export default withEnglishFallback({
   app: {
@@ -4824,6 +4825,7 @@ export default withEnglishFallback({
     filterTables: "Buscar tablas...",
     runInBackground: "Ejecutar en segundo plano",
   },
+  docker: dockerMessages.es,
   nacos: {
     dashboard: "Panel",
     dashboardTitle: "Panel de operaciones",

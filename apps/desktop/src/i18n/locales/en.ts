@@ -1,3 +1,5 @@
+import { dockerMessages } from "./dockerMessages";
+
 export default {
   app: {
     name: "DBX",
@@ -6044,6 +6046,7 @@ export default {
     presetSchema: "Latest schema",
     presetSchemaDesc: "Current topic schema definition",
   },
+  docker: dockerMessages.en,
   nacos: {
     dashboard: "Dashboard",
     dashboardTitle: "Operations Dashboard",

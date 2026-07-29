@@ -1,4 +1,5 @@
 import { withEnglishFallback } from "./fallback";
+import { dockerMessages } from "./dockerMessages";
 
 export default withEnglishFallback({
   app: {
@@ -4822,6 +4823,7 @@ export default withEnglishFallback({
     exportError: "エクスポートに失敗しました: {error}",
     exportCancelled: "エクスポートがキャンセルされました",
   },
+  docker: dockerMessages.ja,
   nacos: {
     dashboard: "ダッシュボード",
     dashboardTitle: "運用ダッシュボード",

@@ -1,4 +1,5 @@
 import { withEnglishFallback } from "./fallback";
+import { dockerMessages } from "./dockerMessages";
 
 export default withEnglishFallback({
   app: {
@@ -4824,6 +4825,7 @@ export default withEnglishFallback({
     exportError: "Falha na exportação: {error}",
     exportCancelled: "Exportação cancelada",
   },
+  docker: dockerMessages["pt-BR"],
   nacos: {
     dashboard: "Painel",
     dashboardTitle: "Painel de operações",

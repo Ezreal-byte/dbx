@@ -1,4 +1,5 @@
 import { withEnglishFallback } from "./fallback";
+import { dockerMessages } from "./dockerMessages";
 export default withEnglishFallback({
   app: {
     name: "DBX",
@@ -4822,6 +4823,7 @@ export default withEnglishFallback({
     exportCancelled: "Esportazione annullata",
     runInBackground: "Esegui in background",
   },
+  docker: dockerMessages.it,
   nacos: {
     dashboard: "Dashboard",
     dashboardTitle: "Dashboard operativa",
