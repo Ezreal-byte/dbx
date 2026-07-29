@@ -203,14 +203,21 @@ pub async fn sftp_upload(
     headers: HeaderMap,
     mut multipart: Multipart,
 ) -> Result<Json<SftpTransferTask>, (StatusCode, String)> {
-    let mut session_id = None;
+    let mut session_id: Option<String> = None;
     let mut remote_path = None;
     let mut temp_file = None;
+    let mut authorized = false;
     while let Some(mut field) = multipart.next_field().await.map_err(bad_request)? {
         match field.name() {
             Some("sessionId") => session_id = Some(field.text().await.map_err(bad_request)?),
             Some("remotePath") => remote_path = Some(field.text().await.map_err(bad_request)?),
             Some("file") => {
+                // Authorization must succeed before writing anything to disk (C-3 fix).
+                let sid = session_id.as_deref().ok_or_else(|| bad_request("sessionId must precede the file field"))?;
+                if !authorized {
+                    authorize_session(&state, &headers, sid).await?;
+                    authorized = true;
+                }
                 let path = state.data_dir.join(format!(".ssh-upload-{}", uuid::Uuid::new_v4()));
                 let mut output = tokio::fs::File::create(&path).await.map_err(internal_error)?;
                 let guard = TempFileGuard(path);
@@ -224,7 +231,10 @@ pub async fn sftp_upload(
         }
     }
     let session_id = session_id.ok_or_else(|| bad_request("Missing sessionId"))?;
-    authorize_session(&state, &headers, &session_id).await?;
+    // Ensure auth even if the file field was absent.
+    if !authorized {
+        authorize_session(&state, &headers, &session_id).await?;
+    }
     let task_id = uuid::Uuid::new_v4().to_string();
     let remote_path = remote_path.ok_or_else(|| bad_request("Missing remotePath"))?;
     let temp_file = temp_file.ok_or_else(|| bad_request("Missing file"))?;

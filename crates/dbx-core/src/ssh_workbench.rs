@@ -277,17 +277,8 @@ struct TransferCleanupGuard {
 }
 
 enum TransferArtifactCleanup {
-    Remote {
-        sftp: Arc<Mutex<SftpSession>>,
-        temporary_path: String,
-        target_path: String,
-        backup_path: String,
-    },
-    Local {
-        temporary_path: PathBuf,
-        target_path: PathBuf,
-        backup_path: PathBuf,
-    },
+    Remote { sftp: Arc<Mutex<SftpSession>>, temporary_path: String, target_path: String, backup_path: String },
+    Local { temporary_path: PathBuf, target_path: PathBuf, backup_path: PathBuf },
 }
 
 impl TransferCleanupGuard {
@@ -1490,7 +1481,10 @@ fn delete_remote(
     recursive: bool,
 ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send>> {
     Box::pin(async move {
-        let metadata = sftp.lock().await.metadata(path.clone()).await.map_err(sftp_error)?;
+        // Use LSTAT (symlink_metadata) instead of STAT (metadata) so that symlinks
+        // are never followed — a symlink to a directory won't be recursed into,
+        // and will be removed via remove_file rather than remove_dir (C-4 fix).
+        let metadata = sftp.lock().await.symlink_metadata(path.clone()).await.map_err(sftp_error)?;
         if metadata.file_type().is_dir() {
             if recursive {
                 let children: Vec<String> = sftp
@@ -1523,6 +1517,8 @@ mod tests {
         DIRECTORY_HANDSHAKE_LIMIT,
     };
     use crate::models::connection::ConnectionConfig;
+    use std::time::Duration;
+    use tokio_util::sync::CancellationToken;
 
     #[test]
     fn decodes_workbench_config_from_external_config() {

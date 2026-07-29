@@ -7,6 +7,16 @@ use tokio_util::sync::CancellationToken;
 
 use crate::sse::TransferProgressChannel;
 
+pub struct SshWebDownload {
+    pub owner_session: String,
+    pub stream: dbx_core::ssh_workbench::SftpDownloadStream,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct AnonymousSshSession {
+    pub last_seen: std::time::Instant,
+}
+
 pub struct LoginRateLimit {
     pub fail_count: u32,
     pub locked_until: Option<std::time::Instant>,
@@ -27,11 +37,13 @@ pub struct WebState {
     pub password_disabled: bool,
     pub password_hash: RwLock<Option<String>>,
     pub sessions: RwLock<HashSet<String>>,
+    pub anonymous_ssh_sessions: RwLock<HashMap<String, AnonymousSshSession>>,
     pub sse_channels: RwLock<HashMap<String, broadcast::Sender<String>>>,
     pub transfer_progress_channels: RwLock<HashMap<String, Arc<TransferProgressChannel>>>,
     pub table_import_channels: RwLock<HashMap<String, watch::Sender<String>>>,
     pub sql_file_executions: RwLock<HashMap<String, CancellationToken>>,
     pub nacos_imports: RwLock<HashMap<String, NacosImportContext>>,
+    pub ssh_downloads: RwLock<HashMap<String, SshWebDownload>>,
     pub login_rate_limit: Mutex<LoginRateLimit>,
     /// Table export temp files: export_id -> (file_path, format)
     pub export_files: RwLock<HashMap<String, (String, String)>>,
@@ -53,11 +65,13 @@ impl WebState {
             password_disabled: false,
             password_hash: RwLock::new(None),
             sessions: RwLock::new(HashSet::new()),
+            anonymous_ssh_sessions: RwLock::new(HashMap::new()),
             sse_channels: RwLock::new(HashMap::new()),
             transfer_progress_channels: RwLock::new(HashMap::new()),
             table_import_channels: RwLock::new(HashMap::new()),
             sql_file_executions: RwLock::new(HashMap::new()),
             nacos_imports: RwLock::new(HashMap::new()),
+            ssh_downloads: RwLock::new(HashMap::new()),
             login_rate_limit: Mutex::new(LoginRateLimit { fail_count: 0, locked_until: None }),
             export_files: RwLock::new(HashMap::new()),
             ssh_prompts: Arc::new(crate::ssh_prompt::SshPromptHub::new()),
