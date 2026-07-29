@@ -189,7 +189,26 @@ import type {
 } from "@/types/nacos";
 import { safeLocalStorageGet, safeLocalStorageSet } from "@/lib/backend/safeStorage";
 import { normalizeConnectionTestResult } from "@/lib/connection/connectionDatabaseInfo";
-import type { DockerConnectionInfo, DockerContainer, DockerContainerAction, DockerContainerStats, DockerImage, DockerNetwork, DockerVolume } from "@/types/docker";
+import type {
+  DockerConnectionInfo,
+  DockerContainer,
+  DockerContainerAction,
+  DockerContainerStats,
+  DockerCreateContainerRequest,
+  DockerCreateContainerResult,
+  DockerCreateNetworkRequest,
+  DockerCreateNetworkResult,
+  DockerCreateVolumeRequest,
+  DockerFileEntry,
+  DockerFilePreview,
+  DockerImage,
+  DockerLogOptions,
+  DockerNetwork,
+  DockerRegistryAuth,
+  DockerStreamEvent,
+  DockerStreamHandle,
+  DockerVolume,
+} from "@/types/docker";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -3287,6 +3306,147 @@ export function dockerInspectContainer(connectionId: string, containerId: string
 
 export function dockerContainerStats(connectionId: string, containerIds: string[]): Promise<DockerContainerStats[]> {
   return post("/api/docker/containers/stats", { connectionId, containerIds });
+}
+
+export function dockerCreateContainer(connectionId: string, request: DockerCreateContainerRequest): Promise<DockerCreateContainerResult> {
+  return post("/api/docker/containers/create", { connectionId, request });
+}
+
+export async function dockerRemoveContainer(connectionId: string, containerId: string): Promise<void> {
+  await post("/api/docker/containers/remove", { connectionId, containerId });
+}
+
+export async function dockerRemoveImage(connectionId: string, imageId: string): Promise<void> {
+  await post("/api/docker/images/remove", { connectionId, imageId });
+}
+
+export function dockerCreateVolume(connectionId: string, request: DockerCreateVolumeRequest): Promise<DockerVolume> {
+  return post("/api/docker/volumes/create", { connectionId, request });
+}
+
+export function dockerCreateNetwork(connectionId: string, request: DockerCreateNetworkRequest): Promise<DockerCreateNetworkResult> {
+  return post("/api/docker/networks/create", { connectionId, request });
+}
+
+export function dockerListContainerFiles(connectionId: string, containerId: string, path: string): Promise<DockerFileEntry[]> {
+  return post("/api/docker/containers/files/list", { connectionId, containerId, path });
+}
+
+export function dockerPreviewContainerFile(connectionId: string, containerId: string, path: string): Promise<DockerFilePreview> {
+  return post("/api/docker/containers/files/preview", { connectionId, containerId, path });
+}
+
+async function dockerPostBytes(url: string, body: unknown): Promise<Uint8Array> {
+  const response = await fetch(apiUrl(url), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!response.ok) throw new Error(await response.text());
+  return new Uint8Array(await response.arrayBuffer());
+}
+
+export function dockerDownloadContainerFile(connectionId: string, containerId: string, path: string): Promise<Uint8Array> {
+  return dockerPostBytes("/api/docker/containers/files/download", { connectionId, containerId, path });
+}
+
+export function dockerExportImage(connectionId: string, imageId: string): Promise<Uint8Array> {
+  return dockerPostBytes("/api/docker/images/export", { connectionId, imageId });
+}
+
+function dockerStreamSessionId(): string {
+  return globalThis.crypto?.randomUUID?.() ?? `docker-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+async function consumeDockerEventStream(
+  response: Response,
+  sessionId: string,
+  signal: AbortSignal,
+  onEvent: (event: DockerStreamEvent) => void,
+): Promise<void> {
+  if (!response.ok) throw new Error(await response.text());
+  if (!response.body) throw new Error("Streaming response body is unavailable");
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  while (!signal.aborted) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true }).replace(/\r\n/g, "\n");
+    let boundary = buffer.indexOf("\n\n");
+    while (boundary >= 0) {
+      const block = buffer.slice(0, boundary);
+      buffer = buffer.slice(boundary + 2);
+      const eventName = block
+        .split("\n")
+        .find((line) => line.startsWith("event:"))
+        ?.slice(6)
+        .trim();
+      const chunk = block
+        .split("\n")
+        .filter((line) => line.startsWith("data:"))
+        .map((line) => line.slice(5).replace(/^ /, ""))
+        .join("\n");
+      if (eventName === "error") {
+        onEvent({ sessionId, chunk: "", done: true, error: chunk });
+        return;
+      }
+      if (chunk) onEvent({ sessionId, chunk, done: false });
+      boundary = buffer.indexOf("\n\n");
+    }
+  }
+  if (!signal.aborted) onEvent({ sessionId, chunk: "", done: true });
+}
+
+async function startDockerHttpStream(
+  request: (signal: AbortSignal) => Promise<Response>,
+  onEvent: (event: DockerStreamEvent) => void,
+): Promise<DockerStreamHandle> {
+  const sessionId = dockerStreamSessionId();
+  const controller = new AbortController();
+  const response = await request(controller.signal);
+  void consumeDockerEventStream(response, sessionId, controller.signal, onEvent).catch((error) => {
+    if (!controller.signal.aborted) {
+      onEvent({ sessionId, chunk: "", done: true, error: error instanceof Error ? error.message : String(error) });
+    }
+  });
+  return {
+    sessionId,
+    stop: async () => controller.abort(),
+  };
+}
+
+export function dockerStartLogs(
+  connectionId: string,
+  containerId: string,
+  options: DockerLogOptions,
+  onEvent: (event: DockerStreamEvent) => void,
+): Promise<DockerStreamHandle> {
+  const query = qs({
+    connectionId,
+    containerId,
+    tail: options.tail,
+    timestamps: options.timestamps,
+  });
+  return startDockerHttpStream((signal) => fetch(apiUrl(`/api/docker/containers/logs/stream?${query}`), { signal }), onEvent);
+}
+
+export function dockerPullImage(
+  connectionId: string,
+  image: string,
+  auth: DockerRegistryAuth | undefined,
+  onEvent: (event: DockerStreamEvent) => void,
+): Promise<DockerStreamHandle> {
+  return startDockerHttpStream(
+    (signal) =>
+      fetch(apiUrl("/api/docker/images/pull"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ connectionId, image, auth }),
+        signal,
+      }),
+    onEvent,
+  );
 }
 
 export * from "@/lib/backend/mq-http";

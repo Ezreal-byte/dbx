@@ -63,7 +63,7 @@ export interface DockerNetwork {
   labels: Record<string, string>;
 }
 
-export type DockerContainerAction = "start" | "stop" | "restart";
+export type DockerContainerAction = "start" | "pause" | "unpause" | "stop" | "restart";
 
 export interface DockerContainerStats {
   containerId: string;
@@ -76,4 +76,94 @@ export interface DockerContainerStats {
   networkTx: number;
   blockRead: number;
   blockWrite: number;
+}
+
+export interface DockerPortBinding {
+  containerPort: number;
+  protocol: "tcp" | "udp";
+  hostIp: string;
+  hostPort?: number;
+}
+
+export interface DockerMountInput {
+  type: "bind" | "volume";
+  source: string;
+  target: string;
+  readOnly: boolean;
+}
+
+export interface DockerCreateContainerRequest {
+  name: string;
+  image: string;
+  command: string[];
+  environment: string[];
+  ports: DockerPortBinding[];
+  mounts: DockerMountInput[];
+  network?: string;
+  restartPolicy: "no" | "always" | "unless-stopped" | "on-failure";
+  start: boolean;
+}
+
+export interface DockerCreateContainerResult {
+  id: string;
+  warnings: string[];
+}
+
+export interface DockerRegistryAuth {
+  serverAddress: string;
+  username: string;
+  password: string;
+}
+
+export interface DockerCreateVolumeRequest {
+  name: string;
+  driver: string;
+  labels: Record<string, string>;
+  driverOptions: Record<string, string>;
+}
+
+export interface DockerCreateNetworkRequest {
+  name: string;
+  driver: string;
+  internal: boolean;
+  attachable: boolean;
+  subnet?: string;
+  gateway?: string;
+}
+
+export interface DockerCreateNetworkResult {
+  id: string;
+  warning: string;
+}
+
+export interface DockerLogOptions {
+  tail: number;
+  timestamps: boolean;
+}
+
+export interface DockerFileEntry {
+  name: string;
+  path: string;
+  kind: "directory" | "file" | "symlink";
+  size: number;
+  modified: number;
+}
+
+export interface DockerFilePreview {
+  path: string;
+  content: string;
+  truncated: boolean;
+  binary: boolean;
+}
+
+export interface DockerStreamEvent {
+  sessionId: string;
+  chunk: string;
+  done: boolean;
+  error?: string | null;
+}
+
+export interface DockerStreamHandle {
+  sessionId: string;
+  stop: () => Promise<void>;
 }
