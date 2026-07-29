@@ -523,6 +523,7 @@ pub enum DatabaseType {
     #[serde(rename = "zookeeper")]
     ZooKeeper,
     Nacos,
+    Docker,
     #[serde(rename = "iris")]
     Iris,
     #[serde(rename = "turso")]
@@ -1084,6 +1085,7 @@ impl ConnectionConfig {
             DatabaseType::Jdbc => "jdbc:<redacted>".to_string(),
             DatabaseType::MessageQueue => self.message_queue_admin_url(),
             DatabaseType::Nacos => self.nacos_admin_url(),
+            DatabaseType::Docker => format!("docker://{host}:{port}"),
         }
     }
 
@@ -1313,6 +1315,7 @@ impl ConnectionConfig {
             }
             DatabaseType::MessageQueue => self.message_queue_admin_url(),
             DatabaseType::Nacos => self.nacos_admin_url(),
+            DatabaseType::Docker => format!("docker://{host}:{port}"),
         }
     }
 
