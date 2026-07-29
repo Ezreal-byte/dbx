@@ -276,7 +276,7 @@ impl From<DockerNetworkWire> for DockerNetwork {
 
 #[cfg(test)]
 mod tests {
-    use super::{DockerImageWire, DockerVolumeListWire};
+    use super::{DockerContainerAction, DockerImageWire, DockerVolumeListWire};
 
     #[test]
     fn accepts_nullable_fields_from_older_and_newer_engines() {
@@ -296,14 +296,185 @@ mod tests {
             serde_json::from_value(serde_json::json!({"Volumes": null, "Warnings": null})).unwrap();
         assert!(volumes.volumes.is_empty());
     }
+
+    #[test]
+    fn lifecycle_actions_keep_lowercase_wire_values() {
+        assert_eq!(serde_json::to_string(&DockerContainerAction::Pause).unwrap(), "\"pause\"");
+        assert!(matches!(
+            serde_json::from_str::<DockerContainerAction>("\"unpause\"").unwrap(),
+            DockerContainerAction::Unpause
+        ));
+    }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum DockerContainerAction {
     Start,
+    Pause,
+    Unpause,
     Stop,
     Restart,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DockerPortBinding {
+    pub container_port: u16,
+    #[serde(default = "default_port_protocol")]
+    pub protocol: String,
+    #[serde(default)]
+    pub host_ip: String,
+    pub host_port: Option<u16>,
+}
+
+fn default_port_protocol() -> String {
+    "tcp".to_string()
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DockerMountInput {
+    #[serde(rename = "type")]
+    pub mount_type: String,
+    pub source: String,
+    pub target: String,
+    #[serde(default)]
+    pub read_only: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DockerCreateContainerRequest {
+    pub name: String,
+    pub image: String,
+    #[serde(default)]
+    pub command: Vec<String>,
+    #[serde(default)]
+    pub environment: Vec<String>,
+    #[serde(default)]
+    pub ports: Vec<DockerPortBinding>,
+    #[serde(default)]
+    pub mounts: Vec<DockerMountInput>,
+    pub network: Option<String>,
+    #[serde(default)]
+    pub restart_policy: String,
+    #[serde(default)]
+    pub start: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DockerCreateContainerResult {
+    pub id: String,
+    #[serde(default)]
+    pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DockerRegistryAuth {
+    #[serde(default)]
+    pub server_address: String,
+    #[serde(default)]
+    pub username: String,
+    #[serde(default)]
+    pub password: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DockerCreateVolumeRequest {
+    pub name: String,
+    #[serde(default = "default_volume_driver")]
+    pub driver: String,
+    #[serde(default)]
+    pub labels: HashMap<String, String>,
+    #[serde(default)]
+    pub driver_options: HashMap<String, String>,
+}
+
+fn default_volume_driver() -> String {
+    "local".to_string()
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DockerCreateNetworkRequest {
+    pub name: String,
+    #[serde(default = "default_network_driver")]
+    pub driver: String,
+    #[serde(default)]
+    pub internal: bool,
+    #[serde(default)]
+    pub attachable: bool,
+    pub subnet: Option<String>,
+    pub gateway: Option<String>,
+}
+
+fn default_network_driver() -> String {
+    "bridge".to_string()
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DockerCreateNetworkResult {
+    pub id: String,
+    #[serde(default)]
+    pub warning: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DockerLogOptions {
+    #[serde(default = "default_log_tail")]
+    pub tail: usize,
+    #[serde(default)]
+    pub timestamps: bool,
+}
+
+fn default_log_tail() -> usize {
+    500
+}
+
+impl Default for DockerLogOptions {
+    fn default() -> Self {
+        Self {
+            tail: default_log_tail(),
+            timestamps: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DockerFileEntry {
+    pub name: String,
+    pub path: String,
+    pub kind: String,
+    pub size: u64,
+    pub modified: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DockerFilePreview {
+    pub path: String,
+    pub content: String,
+    pub truncated: bool,
+    pub binary: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DockerProgressEvent {
+    pub session_id: String,
+    pub status: String,
+    pub message: String,
+    pub current: Option<u64>,
+    pub total: Option<u64>,
+    pub done: bool,
+    pub error: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

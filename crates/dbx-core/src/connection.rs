@@ -2811,6 +2811,7 @@ impl AppState {
     }
 
     async fn reset_connection_transport_layers(&self, connection_id: &str, layer_count: usize) {
+        self.tunnels.stop_tunnels_with_prefix(&format!("{connection_id}:docker-")).await;
         let redis_cluster_prefix = redis_cluster_transport_prefix(connection_id);
         self.tunnels.stop_tunnels_with_prefix(&redis_cluster_prefix).await;
         self.proxy_tunnels.stop_tunnels_with_prefix(&redis_cluster_prefix).await;

@@ -14,6 +14,7 @@ use super::types::DockerVersionResponse;
 
 pub(crate) struct DockerClient {
     client: Client,
+    stream_client: Client,
     base_url: String,
     api_version: String,
 }
@@ -25,7 +26,7 @@ impl DockerClient {
         connection: &ConnectionConfig,
         config: &DockerAdminConfig,
     ) -> Result<(Self, DockerVersionResponse), String> {
-        let (client, base_url) = build_transport(state, connection_id, connection, config).await?;
+        let (client, stream_client, base_url) = build_transport(state, connection_id, connection, config).await?;
         let version: DockerVersionResponse =
             request_json_with(&client, Method::GET, &format!("{base_url}/version"), None).await?;
         let api_version = if config.api_version == "auto" {
@@ -38,7 +39,7 @@ impl DockerClient {
         if ping.trim() != "OK" {
             return Err(format!("Docker daemon returned an unexpected ping response: {ping}"));
         }
-        Ok((Self { client, base_url, api_version }, version))
+        Ok((Self { client, stream_client, base_url, api_version }, version))
     }
 
     fn endpoint(&self, path: &str) -> String {
@@ -56,6 +57,46 @@ impl DockerClient {
     pub async fn post_empty(&self, path: &str) -> Result<(), String> {
         request_empty_with(&self.client, Method::POST, &self.endpoint(path)).await
     }
+
+    pub async fn post_json<T: DeserializeOwned>(&self, path: &str, body: Value) -> Result<T, String> {
+        request_json_with(&self.client, Method::POST, &self.endpoint(path), Some(body)).await
+    }
+
+    pub async fn delete_empty(&self, path: &str) -> Result<(), String> {
+        request_empty_body_with(&self.client, Method::DELETE, &self.endpoint(path), None, None).await
+    }
+
+    pub async fn get_bytes(&self, path: &str) -> Result<Vec<u8>, String> {
+        request_bytes_with(&self.client, Method::GET, &self.endpoint(path), None).await
+    }
+
+    pub async fn post_bytes(&self, path: &str, body: Value) -> Result<Vec<u8>, String> {
+        request_bytes_with(&self.client, Method::POST, &self.endpoint(path), Some(body)).await
+    }
+
+    pub async fn request_stream(
+        &self,
+        method: Method,
+        path: &str,
+        body: Option<Value>,
+        registry_auth: Option<String>,
+    ) -> Result<reqwest::Response, String> {
+        let url = self.endpoint(path);
+        let mut request = self.stream_client.request(method, &url);
+        if let Some(body) = body {
+            request = request.json(&body);
+        }
+        if let Some(registry_auth) = registry_auth {
+            request = request.header("X-Registry-Auth", registry_auth);
+        }
+        let response = request.send().await.map_err(|error| docker_transport_error(&url, error))?;
+        if response.status().is_success() || response.status() == StatusCode::NOT_MODIFIED {
+            return Ok(response);
+        }
+        let status = response.status();
+        let bytes = response.bytes().await.unwrap_or_default();
+        Err(docker_api_error(status, &bytes))
+    }
 }
 
 pub(crate) fn encoded_id(id: &str) -> String {
@@ -67,7 +108,7 @@ async fn build_transport(
     connection_id: &str,
     connection: &ConnectionConfig,
     config: &DockerAdminConfig,
-) -> Result<(Client, String), String> {
+) -> Result<(Client, Client, String), String> {
     let timeout = Duration::from_secs(connection.effective_connect_timeout_secs().max(5));
     match config.protocol {
         DockerProtocol::Http | DockerProtocol::Https => {
@@ -75,21 +116,30 @@ async fn build_transport(
             let (connect_host, connect_port) = state.connection_host_port(connection_id, connection).await?;
             let scheme = if config.protocol == DockerProtocol::Https { "https" } else { "http" };
             let mut builder = Client::builder().connect_timeout(timeout).timeout(timeout).no_proxy();
+            let mut stream_builder = Client::builder().connect_timeout(timeout).no_proxy();
             if config.protocol == DockerProtocol::Https {
                 builder = configure_tls(builder, connection)?;
+                stream_builder = configure_tls(stream_builder, connection)?;
             }
             if connect_host != original_host || connect_port != connection.port {
                 let loopback = format!("127.0.0.1:{connect_port}")
                     .parse()
                     .map_err(|error| format!("Docker tunnel endpoint is invalid: {error}"))?;
                 builder = builder.resolve(original_host, loopback);
+                stream_builder = stream_builder.resolve(original_host, loopback);
                 Ok((
                     builder.build().map_err(|error| format!("Failed to build Docker HTTP client: {error}"))?,
+                    stream_builder
+                        .build()
+                        .map_err(|error| format!("Failed to build Docker streaming client: {error}"))?,
                     format!("{scheme}://{original_host}:{connect_port}"),
                 ))
             } else {
                 Ok((
                     builder.build().map_err(|error| format!("Failed to build Docker HTTP client: {error}"))?,
+                    stream_builder
+                        .build()
+                        .map_err(|error| format!("Failed to build Docker streaming client: {error}"))?,
                     format!("{scheme}://{original_host}:{connect_port}"),
                 ))
             }
@@ -104,7 +154,13 @@ async fn build_transport(
                     .unix_socket(config.socket_path.clone())
                     .build()
                     .map_err(|error| format!("Failed to open Docker Unix socket: {error}"))?;
-                Ok((client, "http://localhost".to_string()))
+                let stream_client = Client::builder()
+                    .connect_timeout(timeout)
+                    .no_proxy()
+                    .unix_socket(config.socket_path.clone())
+                    .build()
+                    .map_err(|error| format!("Failed to open Docker Unix socket for streaming: {error}"))?;
+                Ok((client, stream_client, "http://localhost".to_string()))
             }
             #[cfg(not(unix))]
             {
@@ -127,7 +183,12 @@ async fn build_transport(
                 .no_proxy()
                 .build()
                 .map_err(|error| format!("Failed to build Docker NC client: {error}"))?;
-            Ok((client, format!("http://127.0.0.1:{port}")))
+            let stream_client = Client::builder()
+                .connect_timeout(timeout)
+                .no_proxy()
+                .build()
+                .map_err(|error| format!("Failed to build Docker NC streaming client: {error}"))?;
+            Ok((client, stream_client, format!("http://127.0.0.1:{port}")))
         }
     }
 }
@@ -202,13 +263,49 @@ async fn request_text_with(client: &Client, method: Method, url: &str) -> Result
 }
 
 async fn request_empty_with(client: &Client, method: Method, url: &str) -> Result<(), String> {
-    let response = client.request(method, url).send().await.map_err(|error| docker_transport_error(url, error))?;
+    request_empty_body_with(client, method, url, None, None).await
+}
+
+async fn request_empty_body_with(
+    client: &Client,
+    method: Method,
+    url: &str,
+    body: Option<Value>,
+    registry_auth: Option<String>,
+) -> Result<(), String> {
+    let mut request = client.request(method, url);
+    if let Some(body) = body {
+        request = request.json(&body);
+    }
+    if let Some(registry_auth) = registry_auth {
+        request = request.header("X-Registry-Auth", registry_auth);
+    }
+    let response = request.send().await.map_err(|error| docker_transport_error(url, error))?;
     if response.status().is_success() || response.status() == StatusCode::NOT_MODIFIED {
         return Ok(());
     }
     let status = response.status();
     let bytes = response.bytes().await.unwrap_or_default();
     Err(docker_api_error(status, &bytes))
+}
+
+async fn request_bytes_with(
+    client: &Client,
+    method: Method,
+    url: &str,
+    body: Option<Value>,
+) -> Result<Vec<u8>, String> {
+    let mut request = client.request(method, url);
+    if let Some(body) = body {
+        request = request.json(&body);
+    }
+    let response = request.send().await.map_err(|error| docker_transport_error(url, error))?;
+    let status = response.status();
+    let bytes = response.bytes().await.map_err(|error| format!("Failed to read Docker response: {error}"))?;
+    if !status.is_success() {
+        return Err(docker_api_error(status, &bytes));
+    }
+    Ok(bytes.to_vec())
 }
 
 fn docker_transport_error(url: &str, error: reqwest::Error) -> String {
