@@ -35,8 +35,9 @@ test("double click navigation mode opens other actionable rows on double click",
   assert.equal(treeNodeRowDoubleClickAction("saved-sql-file", false, "double"), "open-saved-sql");
 });
 
-test("double click navigation mode toggles expandable rows on double click", () => {
-  assert.equal(treeNodeRowDoubleClickAction("connection", false, "double", true), "toggle");
+test("double click navigation mode connects connection rows and toggles other expandable rows", () => {
+  assert.equal(treeNodeRowDoubleClickAction("connection", false, "single", true), "connect");
+  assert.equal(treeNodeRowDoubleClickAction("connection", false, "double", true), "connect");
   assert.equal(treeNodeRowDoubleClickAction("group-columns", false, "double", true), "toggle");
   assert.equal(treeNodeRowDoubleClickAction("redis-db", false, "double", false), "toggle");
   assert.equal(treeNodeRowDoubleClickAction("etcd-root", false, "double", false), "toggle");

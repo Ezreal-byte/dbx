@@ -4379,7 +4379,7 @@ async function browseSshKeyPath(target?: SshTunnelConfig | null) {
   if (isTauriRuntime()) {
     const { open } = await import("@tauri-apps/plugin-dialog");
     const selected = await open({
-      title: "Select SSH Private Key",
+      title: t("connection.sshKeySelectTitle"),
       multiple: false,
     });
     if (selected && typeof selected === "string") {
@@ -5594,17 +5594,17 @@ function openExternalUrl(url: string) {
                     <Input v-model="form.username" class="col-span-3" placeholder="root" />
                   </div>
                   <div class="grid grid-cols-4 items-center gap-4">
-                    <Label :class="connectionLabelClass">Authentication</Label>
+                    <Label :class="connectionLabelClass">{{ t("connection.sshAuthMethod") }}</Label>
                     <Select v-model="sshWorkbenchAuthMethod">
                       <SelectTrigger class="col-span-3 h-9">
                         <SelectValue />
                       </SelectTrigger>
                       <SelectContent>
-                        <SelectItem value="password">Password</SelectItem>
-                        <SelectItem value="key">Private key</SelectItem>
-                        <SelectItem value="key+password">Private key, then password</SelectItem>
-                        <SelectItem value="agent">SSH Agent</SelectItem>
-                        <SelectItem value="none">None</SelectItem>
+                        <SelectItem value="password">{{ t("connection.sshAuthMethodPassword") }}</SelectItem>
+                        <SelectItem value="key">{{ t("connection.sshAuthMethodKey") }}</SelectItem>
+                        <SelectItem value="key+password">{{ t("connection.sshAuthMethodKeyPassword") }}</SelectItem>
+                        <SelectItem value="agent">{{ t("connection.sshAuthMethodAgent") }}</SelectItem>
+                        <SelectItem value="none">{{ t("connection.sshAuthMethodNone") }}</SelectItem>
                       </SelectContent>
                     </Select>
                   </div>
@@ -5614,28 +5614,28 @@ function openExternalUrl(url: string) {
                   </div>
                   <template v-if="sshWorkbenchAuthMethod === 'key' || sshWorkbenchAuthMethod === 'key+password'">
                     <div class="grid grid-cols-4 items-center gap-4">
-                      <Label :class="connectionLabelClass">Private key</Label>
+                      <Label :class="connectionLabelClass">{{ t("connection.sshKeyPath") }}</Label>
                       <div class="col-span-3 flex items-center gap-1">
                         <Input v-model="sshWorkbenchKeyPath" class="min-w-0 flex-1" placeholder="~/.ssh/id_ed25519" />
-                        <Button v-if="isDesktop" variant="outline" size="icon" class="h-9 w-9 shrink-0" title="Select SSH private key" @click="browseSshKeyPath()">
+                        <Button v-if="isDesktop" variant="outline" size="icon" class="h-9 w-9 shrink-0" :title="t('connection.sshKeyPathBrowse')" @click="browseSshKeyPath()">
                           <FolderOpen class="h-4 w-4" />
                         </Button>
                       </div>
                     </div>
                     <div class="grid grid-cols-4 items-center gap-4">
-                      <Label :class="connectionLabelClass">Key passphrase</Label>
+                      <Label :class="connectionLabelClass">{{ t("connection.sshKeyPassphrase") }}</Label>
                       <PasswordInput v-model="sshWorkbenchKeyPassphrase" class="col-span-3" />
                     </div>
                   </template>
                   <template v-if="sshWorkbenchAuthMethod === 'agent'">
                     <div class="grid grid-cols-4 items-center gap-4">
-                      <Label :class="connectionLabelClass">Agent socket</Label>
+                      <Label :class="connectionLabelClass">{{ t("connection.sshAgentSockPath") }}</Label>
                       <Input v-model="sshWorkbenchAgentSocket" class="col-span-3" placeholder="SSH_AUTH_SOCK" />
                     </div>
                   </template>
                   <div class="grid grid-cols-4 items-start gap-4">
                     <span />
-                    <p class="col-span-3 m-0 text-xs leading-5 text-muted-foreground">The workbench reuses DBX known_hosts, SSH config, proxy and jump-host handling. Private keys are referenced by path and are not copied into DBX.</p>
+                    <p class="col-span-3 m-0 text-xs leading-5 text-muted-foreground">{{ t("connection.sshWorkbenchHint") }}</p>
                   </div>
                 </template>
 
@@ -6689,6 +6689,8 @@ function openExternalUrl(url: string) {
                     <Switch v-model="keepaliveEnabled" />
                     <Input v-model.number="form.keepalive_interval_secs" type="number" min="1" max="3600" step="1" class="flex-1" :disabled="!keepaliveEnabled" />
                   </div>
+                  <span v-if="form.db_type === 'ssh'" />
+                  <p v-if="form.db_type === 'ssh'" class="col-span-3 -mt-2 text-xs leading-5 text-muted-foreground">{{ t("connection.sshKeepaliveHint") }}</p>
                 </div>
                 <div class="grid grid-cols-4 items-center gap-4">
                   <Label :class="connectionLabelSmallClass">{{ t("connection.readOnly") }}</Label>

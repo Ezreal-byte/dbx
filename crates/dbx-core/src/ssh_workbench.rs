@@ -97,6 +97,7 @@ pub struct SshSessionInfo {
     pub connection_id: String,
     pub connected: bool,
     pub sequence: u64,
+    pub directory_tracking_supported: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -428,6 +429,7 @@ impl SshSessionRegistry {
         let workbench = SshWorkbenchConfig::from_connection(config);
         let handle = Arc::new(connect_config(config, &workbench, &self.known_hosts_path).await?);
         let remote_shell = detect_remote_shell(&handle).await;
+        let directory_tracking_supported = remote_shell.supports_directory_tracking();
         let mut channel = handle
             .channel_open_session()
             .await
@@ -465,6 +467,8 @@ impl SshSessionRegistry {
         tokio::spawn(async move {
             let mut directory_filter = DirectoryHandshakeFilter::default();
             let mut directory_tracking_enabled = false;
+            let mut intentional_close = false;
+            let mut disconnect_stage = "remote-channel";
             let mut directory_timeout = tokio::time::interval(Duration::from_millis(250));
             directory_timeout.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
             loop {
@@ -498,6 +502,7 @@ impl SshSessionRegistry {
                         match command {
                             Some(TerminalCommand::Input(data)) => {
                                 if channel.data(&data[..]).await.is_err() {
+                                    disconnect_stage = "terminal-write";
                                     break;
                                 }
                             }
@@ -522,10 +527,12 @@ impl SshSessionRegistry {
                                 ).await;
                                 let script = directory_tracking_script(enabled, &directory_marker_id, remote_shell);
                                 if channel.data(script.as_bytes()).await.is_err() {
+                                    disconnect_stage = "directory-tracking-write";
                                     break;
                                 }
                             }
                             Some(TerminalCommand::Close) | None => {
+                                intentional_close = true;
                                 let _ = channel.close().await;
                                 break;
                             }
@@ -566,16 +573,29 @@ impl SshSessionRegistry {
                 }
             }
             task_entry.connected.store(false, Ordering::Release);
-            publish_frame(
-                &task_session_id,
-                b"disconnected".to_vec(),
-                TerminalStream::State,
-                &output_tx,
-                &replay,
-                &replay_bytes,
-                &sequence,
-            )
-            .await;
+            if intentional_close {
+                log::debug!(
+                    "SSH workbench session closed by application: connection_id={}, session_id={}",
+                    task_entry.connection_id,
+                    task_session_id
+                );
+            } else {
+                log::warn!(
+                    "SSH workbench transport disconnected: connection_id={}, session_id={}, stage={disconnect_stage}",
+                    task_entry.connection_id,
+                    task_session_id
+                );
+                publish_frame(
+                    &task_session_id,
+                    b"ssh-transport-disconnected".to_vec(),
+                    TerminalStream::State,
+                    &output_tx,
+                    &replay,
+                    &replay_bytes,
+                    &sequence,
+                )
+                .await;
+            }
             cancel_session_transfers(&transfer_cancellations, &task_session_id);
             tokio::time::sleep(DISCONNECTED_SESSION_TTL).await;
             let mut sessions = sessions.write().await;
@@ -588,7 +608,13 @@ impl SshSessionRegistry {
         });
 
         self.sessions.write().await.insert(session_id.clone(), entry);
-        Ok(SshSessionInfo { session_id, connection_id: config.id.clone(), connected: true, sequence: 0 })
+        Ok(SshSessionInfo {
+            session_id,
+            connection_id: config.id.clone(),
+            connected: true,
+            sequence: 0,
+            directory_tracking_supported,
+        })
     }
 
     pub async fn ensure_session_owner(&self, session_id: &str, owner_session: &str) -> Result<(), String> {
@@ -1412,22 +1438,32 @@ fn directory_tracking_marker(session_id: &str) -> Vec<u8> {
 
 fn directory_tracking_script(enabled: bool, session_id: &str, shell: RemoteShell) -> String {
     let marker = format!("\\033]777;dbx-directory-ready-{session_id}\\007");
-    let body = match (shell, enabled) {
-        (RemoteShell::Bash, true) => {
-            r#"if [ -z "${__DBX_CWD_ACTIVE+x}" ]; then __DBX_CWD_ACTIVE=1; __DBX_OLD_PROMPT_COMMAND=${PROMPT_COMMAND-}; __dbx_emit_cwd(){ printf '\033]7;file://%s%s\007' "${HOSTNAME:-localhost}" "$PWD"; }; PROMPT_COMMAND='__dbx_emit_cwd;'"$__DBX_OLD_PROMPT_COMMAND"; fi"#
-        }
-        (RemoteShell::Bash, false) => {
-            r#"if [ -n "${__DBX_CWD_ACTIVE+x}" ]; then PROMPT_COMMAND=${__DBX_OLD_PROMPT_COMMAND-}; unset __DBX_CWD_ACTIVE __DBX_OLD_PROMPT_COMMAND; unset -f __dbx_emit_cwd 2>/dev/null || true; fi"#
-        }
-        (RemoteShell::Zsh, true) => {
-            r#"if [ -z "${__DBX_CWD_ACTIVE+x}" ]; then __DBX_CWD_ACTIVE=1; __dbx_emit_cwd(){ printf '\033]7;file://%s%s\007' "${HOST:-localhost}" "$PWD"; }; typeset -ga precmd_functions; precmd_functions=(__dbx_emit_cwd ${precmd_functions:#__dbx_emit_cwd}); fi"#
-        }
-        (RemoteShell::Zsh, false) => {
-            r#"if [ -n "${__DBX_CWD_ACTIVE+x}" ]; then precmd_functions=(${precmd_functions:#__dbx_emit_cwd}); unset __DBX_CWD_ACTIVE; unfunction __dbx_emit_cwd 2>/dev/null || true; fi"#
-        }
-        (RemoteShell::Other, _) => "",
+    let (body, history_flush) = match (shell, enabled) {
+        (RemoteShell::Bash, true) => (
+            r#"if [ -z "${__DBX_CWD_ACTIVE+x}" ]; then __DBX_CWD_ACTIVE=1; __DBX_OLD_HISTCONTROL_SET=${HISTCONTROL+x}; __DBX_OLD_HISTCONTROL=${HISTCONTROL-}; case ":${HISTCONTROL-}:" in *:ignorespace:*|*:ignoreboth:*) __DBX_HISTORY_NEEDS_DELETE=0 ;; *) __DBX_HISTORY_NEEDS_DELETE=1; HISTCONTROL="${HISTCONTROL:+$HISTCONTROL:}ignorespace" ;; esac; __DBX_OLD_PROMPT_COMMAND=${PROMPT_COMMAND-}; __dbx_emit_cwd(){ printf '\033]7;file://%s%s\007' "${HOSTNAME:-localhost}" "$PWD"; }; PROMPT_COMMAND='__dbx_emit_cwd;'"$__DBX_OLD_PROMPT_COMMAND"; if [ "$__DBX_HISTORY_NEEDS_DELETE" = 1 ]; then history -d $((HISTCMD-1)) 2>/dev/null || true; fi; unset __DBX_HISTORY_NEEDS_DELETE; fi"#,
+            "",
+        ),
+        (RemoteShell::Bash, false) => (
+            r#"if [ -n "${__DBX_CWD_ACTIVE+x}" ]; then PROMPT_COMMAND=${__DBX_OLD_PROMPT_COMMAND-}; unset -f __dbx_emit_cwd 2>/dev/null || true; if [ "${__DBX_OLD_HISTCONTROL_SET-}" = x ]; then HISTCONTROL=${__DBX_OLD_HISTCONTROL-}; else unset HISTCONTROL; fi; unset __DBX_CWD_ACTIVE __DBX_OLD_PROMPT_COMMAND __DBX_OLD_HISTCONTROL_SET __DBX_OLD_HISTCONTROL; fi"#,
+            "",
+        ),
+        (RemoteShell::Zsh, true) => (
+            r#"if [ -z "${__DBX_CWD_ACTIVE+x}" ]; then __DBX_CWD_ACTIVE=1; if [[ -o HIST_IGNORE_SPACE ]]; then __DBX_OLD_HIST_IGNORE_SPACE=1; else __DBX_OLD_HIST_IGNORE_SPACE=0; setopt HIST_IGNORE_SPACE; fi; __dbx_emit_cwd(){ printf '\033]7;file://%s%s\007' "${HOST:-localhost}" "$PWD"; }; typeset -ga precmd_functions; precmd_functions=(__dbx_emit_cwd ${precmd_functions:#__dbx_emit_cwd}); fi"#,
+            " \r",
+        ),
+        (RemoteShell::Zsh, false) => (
+            r#"if [ -n "${__DBX_CWD_ACTIVE+x}" ]; then precmd_functions=(${precmd_functions:#__dbx_emit_cwd}); unfunction __dbx_emit_cwd 2>/dev/null || true; if [[ "${__DBX_OLD_HIST_IGNORE_SPACE-1}" = 0 ]]; then unsetopt HIST_IGNORE_SPACE; fi; unset __DBX_CWD_ACTIVE __DBX_OLD_HIST_IGNORE_SPACE; fi"#,
+            " \r",
+        ),
+        (RemoteShell::Other, _) => ("", ""),
     };
-    format!("{body}; printf '{marker}'\r")
+    format!(" {body}; printf '{marker}'\r{history_flush}")
+}
+
+impl RemoteShell {
+    fn supports_directory_tracking(self) -> bool {
+        matches!(self, Self::Bash | Self::Zsh)
+    }
 }
 
 async fn detect_remote_shell(handle: &Handle<SshClient>) -> RemoteShell {
@@ -1558,8 +1594,16 @@ mod tests {
         assert!(bash_enabled.contains("PROMPT_COMMAND"));
         assert!(bash_enabled.contains("dbx-directory-ready-session-1"));
         assert!(bash_disabled.contains("__DBX_OLD_PROMPT_COMMAND"));
+        assert!(bash_enabled.starts_with(' '));
+        assert!(bash_enabled.contains("HISTCONTROL"));
+        assert!(bash_enabled.contains("history -d"));
+        assert!(bash_disabled.contains("unset HISTCONTROL"));
         assert!(zsh_enabled.contains("precmd_functions"));
         assert!(zsh_disabled.contains("unfunction __dbx_emit_cwd"));
+        assert!(zsh_enabled.starts_with(' '));
+        assert!(zsh_enabled.contains("HIST_IGNORE_SPACE"));
+        assert!(zsh_enabled.ends_with(" \r"));
+        assert!(zsh_disabled.contains("unsetopt HIST_IGNORE_SPACE"));
     }
 
     #[test]
@@ -1567,6 +1611,9 @@ mod tests {
         assert_eq!(classify_remote_shell("/bin/bash\n"), RemoteShell::Bash);
         assert_eq!(classify_remote_shell("/usr/local/bin/zsh"), RemoteShell::Zsh);
         assert_eq!(classify_remote_shell("/usr/bin/fish"), RemoteShell::Other);
+        assert!(RemoteShell::Bash.supports_directory_tracking());
+        assert!(RemoteShell::Zsh.supports_directory_tracking());
+        assert!(!RemoteShell::Other.supports_directory_tracking());
     }
 
     #[tokio::test]

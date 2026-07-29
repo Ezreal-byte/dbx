@@ -264,6 +264,7 @@ export interface SshSessionInfo {
   connectionId: string;
   connected: boolean;
   sequence: number;
+  directoryTrackingSupported: boolean;
 }
 
 export type TerminalControlMessage = { type: "input"; data: string } | { type: "resize"; cols: number; rows: number } | { type: "directoryTracking"; enabled: boolean } | { type: "ping" };
@@ -1019,6 +1020,12 @@ export interface QueryTab {
   sshSftpPath?: string;
   sshFollowDirectory?: boolean;
   sshRestored?: boolean;
+  /** Runtime-only SSH connection state; never persisted across app restarts. */
+  sshConnected?: boolean;
+  /** Runtime-only counter used to reconnect an existing SSH tab. */
+  sshConnectRequestId?: number;
+  /** Runtime-only capability reported by the active remote SSH shell. */
+  sshDirectoryTrackingSupported?: boolean;
   structureTableName?: string;
   structureInitialTab?: TableInfoTab;
   structureInitialTabRequestId?: number;

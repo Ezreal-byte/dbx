@@ -3,19 +3,24 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue"
 import { useI18n } from "vue-i18n";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
-import { ArrowDown, ArrowUp, ArrowUpDown, Columns3, Download, File, FileDown, FileText, FileUp, Folder, FolderPlus, Home, ListChecks, Loader2, Pencil, RefreshCw, Trash2, X } from "@lucide/vue";
+import { ArrowDown, ArrowLeftRight, ArrowUp, ArrowUpDown, ClipboardPaste, Columns3, Copy, Download, Eraser, File, FileDown, FileText, FileUp, Folder, FolderPlus, Home, ListChecks, Loader2, Pencil, RefreshCw, TextSelect, Trash2, X } from "@lucide/vue";
 import { Pane, Splitpanes } from "splitpanes";
+import type { Detection as ZmodemDetection, Session as ZmodemSession, Sentry as ZmodemSentry } from "zmodem.js";
 import "@xterm/xterm/css/xterm.css";
 import "splitpanes/dist/splitpanes.css";
 import * as api from "@/lib/backend/api";
 import { safeLocalStorageGet, safeLocalStorageSet } from "@/lib/backend/safeStorage";
 import { hexToRgba } from "@/lib/common/color";
+import { copyToClipboard, readTextFromClipboard } from "@/lib/common/clipboard";
 import { formatObjectBrowserBytes, formatObjectBrowserTimestamp } from "@/lib/table/objectBrowserRows";
 import { useSettingsStore } from "@/stores/settingsStore";
 import { useToast } from "@/composables/useToast";
 import { useTheme } from "@/composables/useTheme";
 import type { ConnectionConfig, QueryTab, SftpEntry, SftpTransferTask } from "@/types/database";
 import { Osc7DirectoryParser } from "@/lib/ssh/terminalDirectoryTracking";
+import { shouldReattachTerminal, terminalReconnectDelay } from "@/lib/ssh/terminalReconnect";
+import { createZmodemSentry, sendZmodemFiles, type ZmodemUploadProgress } from "@/lib/ssh/terminalZmodem";
+import { getSshWorkbenchSplitLayout, type SshWorkbenchPaneOrder } from "@/lib/ssh/workbenchLayout";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
@@ -39,6 +44,7 @@ const { isDark, themePalette } = useTheme();
 const { toast } = useToast();
 const { t } = useI18n();
 const terminalHost = ref<HTMLElement | null>(null);
+const zmodemFileInput = ref<HTMLInputElement | null>(null);
 const terminalState = ref<"connecting" | "connected" | "disconnected" | "error">("connecting");
 const terminalError = ref("");
 const sftpError = ref("");
@@ -46,6 +52,7 @@ const sftpLoading = ref(false);
 const entries = ref<SftpEntry[]>([]);
 const currentPath = ref(props.tab.sshSftpPath || "");
 const splitRatio = ref(readSplitRatio());
+const paneOrder = ref<SshWorkbenchPaneOrder>(readPaneOrder());
 const operationDialog = ref<"mkdir" | null>(null);
 const operationDraft = ref("");
 const deleteTarget = ref<SftpEntry | null>(null);
@@ -68,13 +75,27 @@ const renameSubmitting = ref(false);
 const renameInput = ref<InstanceType<typeof Input> | null>(null);
 const pendingFollowPath = ref("");
 const failedFollowPath = ref("");
+const zmodemState = ref<"idle" | "waiting" | "uploading">("idle");
+const zmodemFileName = ref("");
+const zmodemTransferred = ref(0);
+const zmodemTotalSize = ref(0);
+const zmodemSpeed = ref(0);
 
 let terminal: Terminal | null = null;
 let fitAddon: FitAddon | null = null;
 let terminalSocket: WebSocket | null = null;
+let zmodemSentry: ZmodemSentry | null = null;
+let zmodemSession: ZmodemSession | null = null;
+let pendingZmodemFiles: File[] = [];
+let zmodemDetectionTimer = 0;
+let zmodemSampledAt = 0;
+let zmodemSampledBytes = 0;
 let resizeObserver: ResizeObserver | null = null;
 let resizeTimer = 0;
+let terminalReconnectTimer = 0;
+let terminalReconnectAttempt = 0;
 let disposed = false;
+let mounted = false;
 let unlistenTransferProgress: (() => void) | null = null;
 let lastCols = 0;
 let lastRows = 0;
@@ -85,10 +106,14 @@ const directoryParser = new Osc7DirectoryParser();
 type SftpColumn = "size" | "modified" | "permissions";
 type SftpSortColumn = "name" | "size" | "modified";
 const SFTP_COLUMNS_STORAGE_KEY = "dbx:ssh-workbench:sftp-columns";
+const PANE_ORDER_STORAGE_KEY = "dbx:ssh-workbench:pane-order";
 const MAX_INLINE_PREVIEW_BYTES = 1024 * 1024;
 const PREVIEWABLE_EXTENSIONS = new Set(["bash", "bat", "c", "cfg", "cmd", "conf", "cpp", "css", "csv", "go", "h", "hpp", "htm", "html", "ini", "java", "js", "json", "log", "md", "properties", "ps1", "py", "rs", "scss", "sh", "sql", "toml", "ts", "tsx", "txt", "vue", "xml", "yaml", "yml", "zsh"]);
-
+const ZMODEM_DETECTION_TIMEOUT_MS = 5000;
 const canWrite = computed(() => !props.connection.read_only);
+const zmodemBusy = computed(() => zmodemState.value !== "idle");
+const zmodemPercent = computed(() => (zmodemTotalSize.value > 0 ? Math.min(100, Math.round((zmodemTransferred.value / zmodemTotalSize.value) * 100)) : 0));
+const splitLayout = computed(() => getSshWorkbenchSplitLayout(paneOrder.value));
 const editorSettings = computed(() => settingsStore.editorSettings);
 const connectionIdentity = computed(() => {
   const host = props.connection.host?.trim() || props.connection.name;
@@ -175,6 +200,18 @@ function onSplitResize(event: { panes?: Array<{ size: number }> } | Array<{ size
   }
   scheduleFit();
 }
+
+function readPaneOrder(): SshWorkbenchPaneOrder {
+  return safeLocalStorageGet(PANE_ORDER_STORAGE_KEY) === "sftp-left" ? "sftp-left" : "terminal-left";
+}
+
+function togglePaneOrder() {
+  paneOrder.value = paneOrder.value === "terminal-left" ? "sftp-left" : "terminal-left";
+  safeLocalStorageSet(PANE_ORDER_STORAGE_KEY, paneOrder.value);
+  void nextTick(scheduleFit);
+}
+
+const paneOrderToggleLabel = computed(() => t(paneOrder.value === "terminal-left" ? "sshWorkbench.moveSftpLeft" : "sshWorkbench.moveTerminalLeft"));
 
 function parentPath(path: string): string {
   const normalized = path.replace(/\/+$/, "");
@@ -268,6 +305,7 @@ function createTerminal() {
   terminal.loadAddon(fitAddon);
   terminal.open(terminalHost.value);
   terminal.onData((data) => {
+    if (zmodemBusy.value) return;
     trackPendingTerminalInput(data);
     if (terminalSocket?.readyState === WebSocket.OPEN) {
       terminalSocket.send(new TextEncoder().encode(data));
@@ -310,6 +348,98 @@ function scheduleFit() {
   }, 20);
 }
 
+function writeTerminalOutput(data: Uint8Array) {
+  for (const path of directoryParser.push(data)) {
+    if (props.tab.sshFollowDirectory) void followTerminalDirectory(path);
+  }
+  terminal?.write(data);
+}
+
+function resetZmodemSentry() {
+  zmodemSentry = createZmodemSentry({
+    send(data) {
+      if (terminalSocket?.readyState !== WebSocket.OPEN) {
+        throw new Error(t("sshWorkbench.terminalDisconnected"));
+      }
+      terminalSocket.send(data.slice().buffer as ArrayBuffer);
+    },
+    toTerminal: writeTerminalOutput,
+    onDetect: handleZmodemDetection,
+    onRetract() {
+      // Detection can be retracted when ordinary terminal bytes follow a partial signature.
+    },
+  });
+}
+
+function handleZmodemDetection(detection: ZmodemDetection) {
+  if (pendingZmodemFiles.length === 0 || detection.get_session_role() !== "send") {
+    detection.deny();
+    if (pendingZmodemFiles.length > 0) finishZmodemUpload(new Error(t("sshWorkbench.zmodemUploadOnly")));
+    return;
+  }
+
+  let session: ZmodemSession;
+  try {
+    session = detection.confirm();
+  } catch (error) {
+    finishZmodemUpload(error);
+    return;
+  }
+  window.clearTimeout(zmodemDetectionTimer);
+  zmodemSession = session;
+  zmodemState.value = "uploading";
+  zmodemSampledAt = performance.now();
+  zmodemSampledBytes = 0;
+  const files = pendingZmodemFiles;
+  void sendZmodemFiles(session, files, updateZmodemProgress)
+    .then(() => {
+      toast(t("sshWorkbench.zmodemUploadComplete", { count: files.length }));
+      finishZmodemUpload();
+      void loadDirectory();
+    })
+    .catch((error) => finishZmodemUpload(error));
+}
+
+function updateZmodemProgress(progress: ZmodemUploadProgress) {
+  zmodemFileName.value = progress.file.name;
+  zmodemTransferred.value = progress.totalTransferred;
+  zmodemTotalSize.value = progress.totalSize;
+  const sampledAt = performance.now();
+  if (sampledAt > zmodemSampledAt) {
+    const elapsed = sampledAt - zmodemSampledAt;
+    if (elapsed >= 250 || progress.totalTransferred === progress.totalSize) {
+      const instantaneous = ((progress.totalTransferred - zmodemSampledBytes) * 1000) / elapsed;
+      zmodemSpeed.value = zmodemSpeed.value > 0 ? zmodemSpeed.value * 0.65 + instantaneous * 0.35 : instantaneous;
+      zmodemSampledAt = sampledAt;
+      zmodemSampledBytes = progress.totalTransferred;
+    }
+  }
+}
+
+function finishZmodemUpload(error?: unknown) {
+  window.clearTimeout(zmodemDetectionTimer);
+  if (error && zmodemSession && !zmodemSession.has_ended()) {
+    try {
+      zmodemSession.abort();
+    } catch {
+      // The socket may already be closed.
+    }
+  }
+  if (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    toast(t("sshWorkbench.zmodemUploadFailed", { error: message }), 5000);
+  }
+  pendingZmodemFiles = [];
+  zmodemSession = null;
+  zmodemState.value = "idle";
+  zmodemFileName.value = "";
+  zmodemTransferred.value = 0;
+  zmodemTotalSize.value = 0;
+  zmodemSpeed.value = 0;
+  resetZmodemSentry();
+  terminal?.focus();
+}
+
 function decodeTerminalFrame(buffer: ArrayBuffer) {
   if (buffer.byteLength < 9 || !terminal) return;
   const view = new DataView(buffer);
@@ -321,27 +451,41 @@ function decodeTerminalFrame(buffer: ArrayBuffer) {
     const stateMessage = data.length ? new TextDecoder().decode(data) : "";
     if (stateMessage === "directory-tracking-unavailable") {
       props.tab.sshFollowDirectory = false;
+      props.tab.sshDirectoryTrackingSupported = false;
       toast(t("sshWorkbench.directoryTrackingUnavailable"), 3500);
       return;
     }
+    window.clearTimeout(terminalReconnectTimer);
     terminalState.value = "disconnected";
-    if (stateMessage) terminalError.value = stateMessage;
+    props.tab.sshConnected = false;
+    terminalError.value = stateMessage === "ssh-transport-disconnected" || stateMessage === "disconnected" ? t("sshWorkbench.transportDisconnected") : stateMessage || t("sshWorkbench.disconnected");
     return;
   }
-  for (const path of directoryParser.push(data)) {
-    if (props.tab.sshFollowDirectory) void followTerminalDirectory(path);
+  try {
+    if (!zmodemSentry) resetZmodemSentry();
+    zmodemSentry?.consume(data.slice().buffer);
+  } catch (error) {
+    if (zmodemBusy.value) finishZmodemUpload(error);
+    else {
+      resetZmodemSentry();
+      writeTerminalOutput(data);
+    }
   }
-  terminal.write(data);
 }
 
 async function attachTerminal(sessionId: string) {
-  terminalSocket?.close();
+  closeTerminalSocket();
   const socket = await api.sshConnectTerminal(sessionId, props.tab.sshLastSequence || 0);
   terminalSocket = socket;
   socket.binaryType = "arraybuffer";
   socket.onopen = () => {
+    if (terminalSocket !== socket) return;
+    terminalReconnectAttempt = 0;
+    window.clearTimeout(terminalReconnectTimer);
     terminalState.value = "connected";
     terminalError.value = "";
+    props.tab.sshConnected = true;
+    resetZmodemSentry();
     scheduleFit();
     terminal?.focus();
     if (props.tab.sshFollowDirectory) {
@@ -352,16 +496,62 @@ async function attachTerminal(sessionId: string) {
     if (event.data instanceof ArrayBuffer) decodeTerminalFrame(event.data);
   };
   socket.onerror = () => {
-    terminalState.value = "error";
     terminalError.value = t("sshWorkbench.socketFailed");
   };
   socket.onclose = () => {
-    if (!disposed && terminalState.value === "connected") terminalState.value = "disconnected";
+    if (terminalSocket !== socket) return;
+    terminalSocket = null;
+    props.tab.sshConnected = false;
+    if (zmodemBusy.value) finishZmodemUpload(new Error(t("sshWorkbench.terminalDisconnected")));
+    if (
+      shouldReattachTerminal({
+        disposed,
+        state: terminalState.value,
+        expectedSessionId: sessionId,
+        currentSessionId: props.tab.sshSessionId,
+      })
+    ) {
+      scheduleTerminalReattach(sessionId);
+    }
   };
 }
 
+function closeTerminalSocket() {
+  const socket = terminalSocket;
+  terminalSocket = null;
+  if (!socket) return;
+  socket.onopen = null;
+  socket.onmessage = null;
+  socket.onerror = null;
+  socket.onclose = null;
+  socket.close();
+}
+
+function scheduleTerminalReattach(sessionId: string) {
+  window.clearTimeout(terminalReconnectTimer);
+  const delay = terminalReconnectDelay(terminalReconnectAttempt);
+  terminalReconnectAttempt += 1;
+  terminalState.value = "connecting";
+  terminalError.value = t("sshWorkbench.reattachingTerminal");
+  terminalReconnectTimer = window.setTimeout(() => {
+    if (
+      !shouldReattachTerminal({
+        disposed,
+        state: terminalState.value,
+        expectedSessionId: sessionId,
+        currentSessionId: props.tab.sshSessionId,
+      })
+    )
+      return;
+    void attachTerminal(sessionId).catch(() => scheduleTerminalReattach(sessionId));
+  }, delay);
+}
+
 async function connectSession(forceNew = false) {
+  window.clearTimeout(terminalReconnectTimer);
+  terminalReconnectAttempt = 0;
   props.tab.sshRestored = false;
+  props.tab.sshConnected = false;
   terminalState.value = "connecting";
   terminalError.value = "";
   try {
@@ -376,6 +566,7 @@ async function connectSession(forceNew = false) {
       const info = await api.sshCreateSession(props.connection, terminal?.cols || 120, terminal?.rows || 32);
       props.tab.sshSessionId = info.sessionId;
       props.tab.sshLastSequence = info.sequence;
+      props.tab.sshDirectoryTrackingSupported = info.directoryTrackingSupported;
     }
     await attachTerminal(props.tab.sshSessionId);
     if (!currentPath.value) {
@@ -435,6 +626,11 @@ async function loadDirectory(path = currentPath.value, fromTerminal = false) {
 }
 
 function toggleDirectoryTracking(enabled: boolean) {
+  if (enabled && props.tab.sshDirectoryTrackingSupported === false) {
+    props.tab.sshFollowDirectory = false;
+    toast(t("sshWorkbench.directoryTrackingUnsupported"), 4500);
+    return;
+  }
   if (pendingTerminalInput.value) {
     toast(t("sshWorkbench.followDirectoryInputPending"), 4000);
     return;
@@ -449,6 +645,102 @@ function toggleDirectoryTracking(enabled: boolean) {
   failedFollowPath.value = "";
   terminalSocket.send(JSON.stringify({ type: "directoryTracking", enabled }));
   terminal?.focus();
+}
+
+function terminalMenuItems(): ContextMenuItem[] {
+  return [
+    {
+      label: t("sshWorkbench.terminalCopy"),
+      icon: Copy,
+      disabled: () => !terminal?.hasSelection(),
+      action: () => void copyTerminalSelection(),
+    },
+    {
+      label: t("sshWorkbench.terminalPaste"),
+      icon: ClipboardPaste,
+      disabled: () => terminalState.value !== "connected" || zmodemBusy.value,
+      action: () => void pasteIntoTerminal(),
+    },
+    {
+      label: t("sshWorkbench.terminalSelectAll"),
+      icon: TextSelect,
+      action: selectAllTerminal,
+    },
+    {
+      label: t("sshWorkbench.terminalClear"),
+      icon: Eraser,
+      action: clearTerminal,
+    },
+    { label: "", separator: true },
+    {
+      label: t("sshWorkbench.zmodemUpload"),
+      icon: FileUp,
+      disabled: () => terminalState.value !== "connected" || zmodemBusy.value || !canWrite.value,
+      action: chooseZmodemFiles,
+    },
+  ];
+}
+
+async function copyTerminalSelection() {
+  const selection = terminal?.getSelection() || "";
+  if (!selection) return;
+  try {
+    await copyToClipboard(selection);
+    toast(t("sshWorkbench.terminalCopied"));
+  } catch (error) {
+    toast(t("sshWorkbench.terminalCopyFailed", { error: error instanceof Error ? error.message : String(error) }), 5000);
+  } finally {
+    terminal?.focus();
+  }
+}
+
+async function pasteIntoTerminal() {
+  if (terminalState.value !== "connected" || zmodemBusy.value || terminalSocket?.readyState !== WebSocket.OPEN) return;
+  try {
+    const text = await readTextFromClipboard();
+    if (text) terminalSocket.send(new TextEncoder().encode(text));
+  } catch (error) {
+    toast(t("sshWorkbench.terminalPasteFailed", { error: error instanceof Error ? error.message : String(error) }), 5000);
+  } finally {
+    terminal?.focus();
+  }
+}
+
+function selectAllTerminal() {
+  terminal?.selectAll();
+  terminal?.focus();
+}
+
+function clearTerminal() {
+  terminal?.clear();
+  terminal?.focus();
+}
+
+function chooseZmodemFiles() {
+  zmodemFileInput.value?.click();
+}
+
+function onZmodemFilesSelected(event: Event) {
+  const input = event.target as HTMLInputElement;
+  const files = Array.from(input.files || []);
+  input.value = "";
+  if (files.length === 0 || terminalState.value !== "connected" || terminalSocket?.readyState !== WebSocket.OPEN) {
+    terminal?.focus();
+    return;
+  }
+
+  pendingZmodemFiles = files;
+  zmodemState.value = "waiting";
+  zmodemFileName.value = files[0]?.name || "";
+  zmodemTransferred.value = 0;
+  zmodemTotalSize.value = files.reduce((sum, file) => sum + file.size, 0);
+  zmodemSpeed.value = 0;
+  resetZmodemSentry();
+  terminalSocket.send(new TextEncoder().encode("rz\r"));
+  window.clearTimeout(zmodemDetectionTimer);
+  zmodemDetectionTimer = window.setTimeout(() => {
+    finishZmodemUpload(new Error(t("sshWorkbench.zmodemNotAvailable")));
+  }, ZMODEM_DETECTION_TIMEOUT_MS);
 }
 
 async function openEntry(entry: SftpEntry) {
@@ -702,7 +994,16 @@ watch(
   },
 );
 
+watch(
+  () => props.tab.sshConnectRequestId,
+  (requestId, previousRequestId) => {
+    if (!mounted || !requestId || requestId === previousRequestId || props.tab.sshConnected === true) return;
+    void connectSession(true);
+  },
+);
+
 onMounted(async () => {
+  mounted = true;
   window.addEventListener("dbx:ssh-sftp-drop", onSftpDrop);
   window.addEventListener("dbx:ssh-sftp-drag-state", onSftpDragState);
   unlistenTransferProgress = await api.listenSftpTransferProgress(updateTransferTask);
@@ -713,7 +1014,7 @@ onMounted(async () => {
     terminalError.value = t("sshWorkbench.restartDisconnected");
     return;
   }
-  await connectSession();
+  await connectSession(!!props.tab.sshSessionId && props.tab.sshConnected === false);
 });
 
 onBeforeUnmount(() => {
@@ -721,9 +1022,19 @@ onBeforeUnmount(() => {
   window.removeEventListener("dbx:ssh-sftp-drag-state", onSftpDragState);
   unlistenTransferProgress?.();
   disposed = true;
+  mounted = false;
   window.clearTimeout(resizeTimer);
+  window.clearTimeout(terminalReconnectTimer);
+  window.clearTimeout(zmodemDetectionTimer);
+  if (zmodemSession && !zmodemSession.has_ended()) {
+    try {
+      zmodemSession.abort();
+    } catch {
+      // The terminal socket is already being disposed.
+    }
+  }
   resizeObserver?.disconnect();
-  terminalSocket?.close();
+  closeTerminalSocket();
   terminal?.dispose();
 });
 </script>
@@ -736,6 +1047,14 @@ onBeforeUnmount(() => {
         <span class="truncate">{{ connectionIdentity }}</span>
       </div>
       <div class="flex min-w-0 items-center gap-0.5">
+        <Tooltip>
+          <TooltipTrigger as-child>
+            <Button variant="ghost" size="icon" class="h-6 w-6 text-muted-foreground hover:bg-accent hover:text-foreground" @click="togglePaneOrder">
+              <ArrowLeftRight class="h-3.5 w-3.5" />
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent>{{ paneOrderToggleLabel }}</TooltipContent>
+        </Tooltip>
         <Tooltip>
           <TooltipTrigger as-child>
             <Button variant="ghost" size="icon" class="h-6 w-6 text-emerald-600 hover:bg-emerald-500/10 hover:text-emerald-700 dark:text-emerald-300 dark:hover:text-emerald-200" @click="connectSession(true)">
@@ -773,13 +1092,16 @@ onBeforeUnmount(() => {
             </DropdownMenuTrigger>
           </LightTooltip>
           <DropdownMenuContent align="end" class="w-40">
-            <DropdownMenuCheckboxItem :checked="visibleSftpColumns.includes('size')" @select="(event: Event) => toggleSftpColumnFromMenu(event, 'size')">
+            <DropdownMenuCheckboxItem indicator-position="left" :model-value="visibleSftpColumns.includes('size')" @select="(event: Event) => toggleSftpColumnFromMenu(event, 'size')">
+              <template #indicator-icon><span class="h-2 w-2 rounded-full bg-emerald-500" /></template>
               {{ t("sshWorkbench.size") }}
             </DropdownMenuCheckboxItem>
-            <DropdownMenuCheckboxItem :checked="visibleSftpColumns.includes('modified')" @select="(event: Event) => toggleSftpColumnFromMenu(event, 'modified')">
+            <DropdownMenuCheckboxItem indicator-position="left" :model-value="visibleSftpColumns.includes('modified')" @select="(event: Event) => toggleSftpColumnFromMenu(event, 'modified')">
+              <template #indicator-icon><span class="h-2 w-2 rounded-full bg-emerald-500" /></template>
               {{ t("sshWorkbench.modified") }}
             </DropdownMenuCheckboxItem>
-            <DropdownMenuCheckboxItem :checked="visibleSftpColumns.includes('permissions')" @select="(event: Event) => toggleSftpColumnFromMenu(event, 'permissions')">
+            <DropdownMenuCheckboxItem indicator-position="left" :model-value="visibleSftpColumns.includes('permissions')" @select="(event: Event) => toggleSftpColumnFromMenu(event, 'permissions')">
+              <template #indicator-icon><span class="h-2 w-2 rounded-full bg-emerald-500" /></template>
               {{ t("sshWorkbench.permissions") }}
             </DropdownMenuCheckboxItem>
           </DropdownMenuContent>
@@ -811,12 +1133,10 @@ onBeforeUnmount(() => {
                 <div class="mt-1.5 h-1 overflow-hidden rounded bg-muted">
                   <div class="h-full bg-primary transition-[width]" :style="{ width: `${transferPercent(task)}%` }" />
                 </div>
-                <div class="mt-1 flex justify-between text-[10px] text-muted-foreground">
-                  <span>{{ t(`sshWorkbench.transferStatus.${task.status}`) }}</span>
-                  <span class="flex items-center gap-2">
-                    <span v-if="transferSpeed(task)">{{ transferSpeed(task) }}</span>
-                    <span>{{ formatObjectBrowserBytes(task.transferred) }} / {{ formatObjectBrowserBytes(task.size) }}</span>
-                  </span>
+                <div class="mt-1 grid grid-cols-[minmax(64px,1fr)_76px_auto] items-center gap-2 text-[10px] text-muted-foreground">
+                  <span class="truncate">{{ t(`sshWorkbench.transferStatus.${task.status}`) }}</span>
+                  <span class="w-[76px] text-left tabular-nums">{{ transferSpeed(task) || "\u00a0" }}</span>
+                  <span class="whitespace-nowrap text-right tabular-nums">{{ formatObjectBrowserBytes(task.transferred) }} / {{ formatObjectBrowserBytes(task.size) }}</span>
                 </div>
               </div>
             </div>
@@ -841,18 +1161,29 @@ onBeforeUnmount(() => {
       </div>
     </header>
 
-    <Splitpanes class="min-h-0 flex-1" @resize="onSplitResize">
+    <Splitpanes :rtl="splitLayout.rtl" class="min-h-0 flex-1 overflow-hidden" :style="{ flexDirection: splitLayout.flexDirection }" @resize="onSplitResize">
       <Pane :size="splitRatio" :min-size="35">
         <section class="terminal-pane">
-          <div class="terminal-body">
-            <div ref="terminalHost" class="terminal-host" />
-            <div v-if="terminalState !== 'connected'" class="terminal-state">
-              <Loader2 v-if="terminalState === 'connecting'" class="h-7 w-7 animate-spin" />
-              <DatabaseIcon v-else db-type="ssh" class="h-9 w-9 opacity-60" />
-              <p>{{ terminalState === "connecting" ? t("sshWorkbench.connecting") : terminalError || t("sshWorkbench.disconnected") }}</p>
-              <Button v-if="terminalState !== 'connecting'" size="sm" @click="connectSession(true)">{{ t("sshWorkbench.reconnect") }}</Button>
+          <CustomContextMenu :items="terminalMenuItems" v-slot="{ onContextMenu }">
+            <div class="terminal-body" @contextmenu="onContextMenu">
+              <div ref="terminalHost" class="terminal-host" />
+              <div v-if="terminalState !== 'connected'" class="terminal-state">
+                <Loader2 v-if="terminalState === 'connecting'" class="h-7 w-7 animate-spin" />
+                <DatabaseIcon v-else db-type="ssh" class="h-9 w-9 opacity-60" />
+                <p>{{ terminalState === "connecting" ? t("sshWorkbench.connecting") : terminalError || t("sshWorkbench.disconnected") }}</p>
+                <Button v-if="terminalState !== 'connecting'" size="sm" @click="connectSession(true)">{{ t("sshWorkbench.reconnect") }}</Button>
+              </div>
+              <div v-if="zmodemBusy" class="zmodem-status">
+                <Loader2 class="h-3.5 w-3.5 shrink-0 animate-spin" />
+                <span class="min-w-0 flex-1 truncate">
+                  {{ zmodemState === "waiting" ? t("sshWorkbench.zmodemWaiting") : t("sshWorkbench.zmodemUploading", { name: zmodemFileName, percent: zmodemPercent }) }}
+                </span>
+                <span v-if="zmodemState === 'uploading'" class="shrink-0 tabular-nums text-muted-foreground">
+                  {{ zmodemSpeed > 0 ? `${formatObjectBrowserBytes(zmodemSpeed)}/s` : "\u00a0" }}
+                </span>
+              </div>
             </div>
-          </div>
+          </CustomContextMenu>
         </section>
       </Pane>
 
@@ -926,6 +1257,7 @@ onBeforeUnmount(() => {
         </section>
       </Pane>
     </Splitpanes>
+    <input ref="zmodemFileInput" class="hidden" type="file" multiple @change="onZmodemFilesSelected" />
 
     <Dialog :open="operationDialog === 'mkdir'" @update:open="(open) => !open && (operationDialog = null)">
       <DialogContent class="sm:max-w-[420px]">
@@ -979,10 +1311,6 @@ onBeforeUnmount(() => {
   background: var(--background);
 }
 
-.terminal-pane {
-  border-right: 1px solid var(--border);
-}
-
 .sftp-pane {
   position: relative;
 }
@@ -1034,7 +1362,7 @@ onBeforeUnmount(() => {
 .terminal-host {
   position: absolute;
   inset: 0;
-  padding: 6px 8px;
+  padding: 6px 0 6px 8px;
 }
 
 .terminal-state {
@@ -1051,6 +1379,25 @@ onBeforeUnmount(() => {
   color: var(--muted-foreground);
   text-align: center;
   font-size: 12px;
+}
+
+.zmodem-status {
+  position: absolute;
+  z-index: 3;
+  right: 8px;
+  bottom: 8px;
+  left: 8px;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  border: 1px solid color-mix(in srgb, var(--primary) 40%, var(--border));
+  border-radius: var(--radius);
+  padding: 6px 8px;
+  background: color-mix(in srgb, var(--background) 92%, transparent);
+  box-shadow: 0 4px 14px color-mix(in srgb, #000 18%, transparent);
+  color: var(--foreground);
+  font-size: 11px;
+  pointer-events: none;
 }
 
 .path-row {
@@ -1151,17 +1498,6 @@ onBeforeUnmount(() => {
   padding: 0 9px;
   color: var(--muted-foreground);
   font-size: 11px;
-}
-
-:deep(.splitpanes__splitter) {
-  position: relative;
-  width: 5px;
-  min-width: 5px;
-  background: var(--border);
-}
-
-:deep(.splitpanes__splitter:hover) {
-  background: color-mix(in srgb, var(--primary) 55%, transparent);
 }
 
 :deep(.xterm-viewport) {

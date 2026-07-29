@@ -953,7 +953,9 @@ function requestDeleteSelectedNode(): boolean {
 function onDoubleClick(event: MouseEvent) {
   if (dataTabOpenModeFromTreeClick(activeNode.value.type, event, settingsStore.editorSettings.shortcuts.openDataInNewTab) === "new-tab") return;
   const action = treeNodeRowDoubleClickAction(activeNode.value.type, canOpenObjectBrowser.value, settingsStore.editorSettings.sidebarActivation, canExpand.value);
-  if (action === "open-object-browser") {
+  if (action === "connect") {
+    void connectFromDoubleClick();
+  } else if (action === "open-object-browser") {
     void openObjectBrowser();
   } else if (action === "open-object-browser-and-expand") {
     void openObjectBrowser();
@@ -970,6 +972,31 @@ function onDoubleClick(event: MouseEvent) {
     openMongoTreeData(activeNode.value);
   } else if (action === "toggle") {
     toggle();
+  }
+}
+
+async function connectFromDoubleClick() {
+  const node = activeNode.value;
+  if (node.type !== "connection" || !node.connectionId) return;
+  const config = connectionStore.getConfig(node.connectionId);
+  if (!config) return;
+
+  if (quickConnectionOpenTarget(config).kind === "ssh-workbench") {
+    queryStore.openSshWorkbench(node.connectionId, { connect: true });
+    return;
+  }
+
+  try {
+    await connectionStore.ensureConnected(node.connectionId);
+    if (!node.isExpanded || !node.children?.length) {
+      node.isExpanded = false;
+      await toggle();
+    }
+  } catch (error: any) {
+    const message = error?.message || String(error);
+    if (message.includes(CONNECTION_ATTEMPT_CANCELLED_MESSAGE)) return;
+    toast(t("connection.connectFailed", { message: translateBackendError(t, message) }), 5000);
+    openDriverStoreForInstallError(message, node);
   }
 }
 

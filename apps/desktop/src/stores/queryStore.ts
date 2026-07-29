@@ -1554,9 +1554,13 @@ export const useQueryStore = defineStore("query", () => {
     return id;
   }
 
-  function openSshWorkbench(connectionId: string, options: { forceNew?: boolean } = {}) {
+  function openSshWorkbench(connectionId: string, options: { forceNew?: boolean; connect?: boolean } = {}) {
     const existing = options.forceNew ? undefined : tabs.value.find((tab) => tab.mode === "ssh" && tab.connectionId === connectionId);
     if (existing) {
+      if (options.connect && existing.sshConnected !== true) {
+        existing.sshRestored = false;
+        existing.sshConnectRequestId = (existing.sshConnectRequestId ?? 0) + 1;
+      }
       switchTab(existing.id);
       return existing.id;
     }
@@ -1576,6 +1580,7 @@ export const useQueryStore = defineStore("query", () => {
       isExplaining: false,
       mode: "ssh",
       sshFollowDirectory: false,
+      sshConnectRequestId: options.connect ? 1 : undefined,
     };
     tabs.value.push(tab);
     activeTabId.value = id;

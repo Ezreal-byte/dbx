@@ -170,7 +170,11 @@ fn ssh_client_config_with_keepalive(keepalive_interval: Option<Duration>) -> Con
     }
     preferred.mac = Cow::Owned(mac);
 
-    Config { nodelay: true, keepalive_interval, preferred, ..Default::default() }
+    // A number of otherwise healthy SSH servers and middleboxes do not reply
+    // to OpenSSH keepalive global requests. Keep sending traffic, but never
+    // tear down a live session solely because those replies are absent.
+    let keepalive_max = if keepalive_interval.is_some() { 0 } else { Config::default().keepalive_max };
+    Config { nodelay: true, keepalive_interval, keepalive_max, preferred, ..Default::default() }
 }
 
 /// Returns `true` only when the server explicitly advertised `password` among
@@ -1273,11 +1277,13 @@ mod tests {
 
     #[test]
     fn ssh_client_config_accepts_custom_and_disabled_keepalive() {
-        assert_eq!(
-            ssh_client_config_with_keepalive(Some(Duration::from_secs(45))).keepalive_interval,
-            Some(Duration::from_secs(45))
-        );
-        assert_eq!(ssh_client_config_with_keepalive(None).keepalive_interval, None);
+        let enabled = ssh_client_config_with_keepalive(Some(Duration::from_secs(45)));
+        assert_eq!(enabled.keepalive_interval, Some(Duration::from_secs(45)));
+        assert_eq!(enabled.keepalive_max, 0);
+
+        let disabled = ssh_client_config_with_keepalive(None);
+        assert_eq!(disabled.keepalive_interval, None);
+        assert_eq!(disabled.keepalive_max, russh::client::Config::default().keepalive_max);
     }
 
     #[test]
