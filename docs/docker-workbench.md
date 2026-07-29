@@ -6,7 +6,7 @@ DBX can manage an existing Docker Engine from both the Tauri desktop application
 
 | Protocol | Target | Requirements |
 | --- | --- | --- |
-| HTTP | Docker Engine TCP API, normally `127.0.0.1:2375` | Remote clear-text HTTP is blocked unless explicitly enabled. Prefer an SSH transport. |
+| HTTP | Docker Engine TCP API, normally `127.0.0.1:2375` | Remote clear-text HTTP shows a root-equivalent access warning. Prefer HTTPS or an SSH transport. |
 | HTTPS | Docker Engine TLS API, normally port `2376` | CA path and optional client certificate/private-key paths must be readable by the DBX backend. |
 | Unix | A local socket such as `/var/run/docker.sock` | The DBX backend must run on Unix and have socket permission. Windows named pipes are not supported. |
 | Unix-Over-Nc | A Unix socket on an SSH host | Select exactly one SSH profile; the remote host must provide `nc -U`. |
@@ -69,6 +69,12 @@ Registry credentials are sent only in the Docker `X-Registry-Auth` request heade
 
 The file browser runs a fixed read-only `/bin/sh` script with the selected path passed as a separate argument. It does not accept arbitrary commands and does not provide upload, edit, or delete operations. Distroless and scratch containers without `/bin/sh`, `stat`, or `head` show an unsupported-capability error. Text preview is limited to 2 MiB.
 
-Docker image archives and container file downloads can be large. The Web image export route streams the archive from the daemon; clients should still ensure adequate network and local disk capacity.
+Docker image archives and container file downloads can be large. The Web image export route streams the archive from the daemon, while Tauri streams directly to the selected local file without routing the archive through frontend IPC.
 
-DBX does not invoke the Docker or Compose CLI. Compose project lifecycle actions, an interactive exec terminal, Windows named pipes, volume/network deletion, file writes, and persistent monitoring remain outside this version.
+## Compose editor
+
+The workbench can create a project from Compose YAML and generate an editable definition from an existing Compose-labelled project. Applying an edit stops, removes, and recreates the project's containers after an explicit danger confirmation; volumes and networks are retained.
+
+The parser intentionally supports a controlled common subset: `image`, `container_name`, `command`, `environment`, short-form `ports`, short-form `volumes`, `networks`, `restart`, and `labels`. It does not invoke Docker Compose, evaluate health-based `depends_on`, build images, process extension fields, or load `.env` files.
+
+DBX does not invoke the Docker or Compose CLI. An interactive exec terminal, Windows named pipes, volume/network deletion, file writes, and persistent monitoring remain outside this version.
