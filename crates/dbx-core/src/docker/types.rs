@@ -356,11 +356,30 @@ pub struct DockerCreateContainerRequest {
     pub ports: Vec<DockerPortBinding>,
     #[serde(default)]
     pub mounts: Vec<DockerMountInput>,
+    #[serde(default)]
+    pub labels: HashMap<String, String>,
     pub network: Option<String>,
     #[serde(default)]
     pub restart_policy: String,
     #[serde(default)]
     pub start: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DockerComposeApplyRequest {
+    pub project_name: String,
+    pub content: String,
+    #[serde(default)]
+    pub replace_existing: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DockerComposeApplyResult {
+    pub container_ids: Vec<String>,
+    #[serde(default)]
+    pub warnings: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

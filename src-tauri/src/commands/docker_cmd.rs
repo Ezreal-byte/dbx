@@ -103,6 +103,15 @@ pub async fn docker_create_container(
 }
 
 #[tauri::command]
+pub async fn docker_apply_compose(
+    state: State<'_, Arc<AppState>>,
+    connection_id: String,
+    request: dbx_core::docker::DockerComposeApplyRequest,
+) -> Result<dbx_core::docker::DockerComposeApplyResult, String> {
+    dbx_core::docker::docker_apply_compose_core(&state, &connection_id, request).await
+}
+
+#[tauri::command]
 pub async fn docker_remove_container(
     state: State<'_, Arc<AppState>>,
     connection_id: String,
@@ -175,6 +184,16 @@ pub async fn docker_export_image(
     image_id: String,
 ) -> Result<Vec<u8>, String> {
     dbx_core::docker::docker_export_image_bytes_core(&state, &connection_id, &image_id).await
+}
+
+#[tauri::command]
+pub async fn docker_export_image_to_path(
+    state: State<'_, Arc<AppState>>,
+    connection_id: String,
+    image_id: String,
+    destination_path: String,
+) -> Result<u64, String> {
+    dbx_core::docker::docker_export_image_to_path_core(&state, &connection_id, &image_id, &destination_path).await
 }
 
 #[tauri::command]

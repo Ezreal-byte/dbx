@@ -553,6 +553,7 @@ async fn main() {
         .route("/docker/containers/inspect", post(routes::docker::inspect_container))
         .route("/docker/containers/stats", post(routes::docker::container_stats))
         .route("/docker/containers/create", post(routes::docker::create_container))
+        .route("/docker/compose/apply", post(routes::docker::apply_compose))
         .route("/docker/containers/remove", post(routes::docker::remove_container))
         .route("/docker/containers/logs/stream", get(routes::docker::stream_logs))
         .route("/docker/containers/files/list", post(routes::docker::list_container_files))

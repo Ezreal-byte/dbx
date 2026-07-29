@@ -7,6 +7,8 @@ import type {
   DockerContainerStats,
   DockerCreateContainerRequest,
   DockerCreateContainerResult,
+  DockerComposeApplyRequest,
+  DockerComposeApplyResult,
   DockerCreateNetworkRequest,
   DockerCreateNetworkResult,
   DockerCreateVolumeRequest,
@@ -57,6 +59,10 @@ export function dockerCreateContainer(connectionId: string, request: DockerCreat
   return invoke("docker_create_container", { connectionId, request });
 }
 
+export function dockerApplyCompose(connectionId: string, request: DockerComposeApplyRequest): Promise<DockerComposeApplyResult> {
+  return invoke("docker_apply_compose", { connectionId, request });
+}
+
 export function dockerRemoveContainer(connectionId: string, containerId: string): Promise<void> {
   return invoke("docker_remove_container", { connectionId, containerId });
 }
@@ -87,6 +93,10 @@ export async function dockerDownloadContainerFile(connectionId: string, containe
 
 export async function dockerExportImage(connectionId: string, imageId: string): Promise<Uint8Array> {
   return new Uint8Array(await invoke<number[]>("docker_export_image", { connectionId, imageId }));
+}
+
+export function dockerExportImageToPath(connectionId: string, imageId: string, destinationPath: string): Promise<number> {
+  return invoke("docker_export_image_to_path", { connectionId, imageId, destinationPath });
 }
 
 function streamSessionId(): string {

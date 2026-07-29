@@ -57,6 +57,13 @@ pub(crate) struct CreateContainerRequest {
 
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub(crate) struct ApplyComposeRequest {
+    connection_id: String,
+    request: dbx_core::docker::DockerComposeApplyRequest,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct FileRequest {
     connection_id: String,
     container_id: String,
@@ -188,6 +195,17 @@ pub async fn create_container(
 ) -> Result<Json<dbx_core::docker::DockerCreateContainerResult>, AppError> {
     ensure_web_writes_enabled(&state)?;
     dbx_core::docker::docker_create_container_core(&state.app, &request.connection_id, request.request)
+        .await
+        .map(Json)
+        .map_err(AppError::from)
+}
+
+pub async fn apply_compose(
+    State(state): State<Arc<WebState>>,
+    Json(request): Json<ApplyComposeRequest>,
+) -> Result<Json<dbx_core::docker::DockerComposeApplyResult>, AppError> {
+    ensure_web_writes_enabled(&state)?;
+    dbx_core::docker::docker_apply_compose_core(&state.app, &request.connection_id, request.request)
         .await
         .map(Json)
         .map_err(AppError::from)

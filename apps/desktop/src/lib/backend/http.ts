@@ -194,6 +194,8 @@ import type {
   DockerContainer,
   DockerContainerAction,
   DockerContainerStats,
+  DockerComposeApplyRequest,
+  DockerComposeApplyResult,
   DockerCreateContainerRequest,
   DockerCreateContainerResult,
   DockerCreateNetworkRequest,
@@ -3312,6 +3314,10 @@ export function dockerCreateContainer(connectionId: string, request: DockerCreat
   return post("/api/docker/containers/create", { connectionId, request });
 }
 
+export function dockerApplyCompose(connectionId: string, request: DockerComposeApplyRequest): Promise<DockerComposeApplyResult> {
+  return post("/api/docker/compose/apply", { connectionId, request });
+}
+
 export async function dockerRemoveContainer(connectionId: string, containerId: string): Promise<void> {
   await post("/api/docker/containers/remove", { connectionId, containerId });
 }
@@ -3352,6 +3358,10 @@ export function dockerDownloadContainerFile(connectionId: string, containerId: s
 
 export function dockerExportImage(connectionId: string, imageId: string): Promise<Uint8Array> {
   return dockerPostBytes("/api/docker/images/export", { connectionId, imageId });
+}
+
+export async function dockerExportImageToPath(): Promise<number> {
+  throw new Error("Direct image export to a local path is only available in the desktop app");
 }
 
 function dockerStreamSessionId(): string {

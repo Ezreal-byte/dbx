@@ -99,9 +99,21 @@ export interface DockerCreateContainerRequest {
   environment: string[];
   ports: DockerPortBinding[];
   mounts: DockerMountInput[];
+  labels: Record<string, string>;
   network?: string;
   restartPolicy: "no" | "always" | "unless-stopped" | "on-failure";
   start: boolean;
+}
+
+export interface DockerComposeApplyRequest {
+  projectName: string;
+  content: string;
+  replaceExisting: boolean;
+}
+
+export interface DockerComposeApplyResult {
+  containerIds: string[];
+  warnings: string[];
 }
 
 export interface DockerCreateContainerResult {

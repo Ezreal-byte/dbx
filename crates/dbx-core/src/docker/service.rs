@@ -1,9 +1,11 @@
 use std::io::{Cursor, Read};
+use std::path::Path;
 
 use base64::Engine;
 use futures::{stream, StreamExt, TryStreamExt};
 use reqwest::Method;
 use serde_json::Value;
+use tokio::io::AsyncWriteExt;
 
 use crate::connection::AppState;
 use crate::models::connection::{ConnectionConfig, DatabaseType};
@@ -212,6 +214,7 @@ pub async fn docker_create_container_core(
         "Image": image,
         "Cmd": request.command,
         "Env": request.environment,
+        "Labels": request.labels,
         "ExposedPorts": exposed_ports,
         "HostConfig": {
             "PortBindings": port_bindings,
@@ -254,7 +257,23 @@ pub async fn docker_remove_container_core(
 pub async fn docker_remove_image_core(state: &AppState, connection_id: &str, image_id: &str) -> Result<(), String> {
     let (connection, client, _) = connection_and_client(state, connection_id).await?;
     ensure_writable(&connection, "image deletion")?;
-    let result = client.delete_empty(&format!("/images/{}?force=false&noprune=true", encoded_id(image_id))).await;
+    let images: Vec<DockerImageWire> = client.get("/images/json?all=false").await?;
+    let references = images
+        .into_iter()
+        .find(|image| image.id == image_id)
+        .map(|image| image.repo_tags.into_iter().filter(|tag| tag != "<none>:<none>").collect::<Vec<_>>())
+        .unwrap_or_default();
+    let result = async {
+        if references.is_empty() {
+            client.delete_empty(&format!("/images/{}?force=false&noprune=true", encoded_id(image_id))).await?;
+        } else {
+            for reference in references {
+                client.delete_empty(&format!("/images/{}?force=false&noprune=true", encoded_id(&reference))).await?;
+            }
+        }
+        Ok(())
+    }
+    .await;
     audit_result(connection_id, image_id, "remove-image", &result);
     result
 }
@@ -338,6 +357,33 @@ pub async fn docker_export_image_response_core(
 ) -> Result<reqwest::Response, String> {
     let (_, client, _) = connection_and_client(state, connection_id).await?;
     client.request_stream(Method::GET, &format!("/images/{}/get", encoded_id(image_id)), None, None).await
+}
+
+pub async fn docker_export_image_to_path_core(
+    state: &AppState,
+    connection_id: &str,
+    image_id: &str,
+    destination_path: &str,
+) -> Result<u64, String> {
+    if destination_path.trim().is_empty() {
+        return Err("Image export destination is required".to_string());
+    }
+    let destination = Path::new(destination_path);
+    let mut response = docker_export_image_response_core(state, connection_id, image_id).await?;
+    let mut file = tokio::fs::File::create(destination)
+        .await
+        .map_err(|error| format!("Failed to create image export file: {error}"))?;
+    let mut written = 0u64;
+    while let Some(chunk) = response.chunk().await.map_err(|error| format!("Docker image export failed: {error}"))? {
+        if let Err(error) = file.write_all(&chunk).await {
+            drop(file);
+            let _ = tokio::fs::remove_file(destination).await;
+            return Err(format!("Failed to write image export: {error}"));
+        }
+        written += chunk.len() as u64;
+    }
+    file.flush().await.map_err(|error| format!("Failed to finish image export: {error}"))?;
+    Ok(written)
 }
 
 pub async fn docker_pull_image_response_core(
