@@ -25,7 +25,7 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock
 ```
 
-Access to the Docker socket is root-equivalent. Any user who can control Docker can mount host paths, access host data, and start privileged workloads. DBX therefore rejects start, stop, and restart operations when Web password protection is disabled (`DBX_DISABLE_PASSWORD=true`). A connection marked read-only also rejects these operations in the shared backend core.
+Access to the Docker socket is root-equivalent. Any user who can control Docker can mount host paths, access host data, and start privileged workloads. DBX therefore rejects every Docker write operation when Web password protection is disabled (`DBX_DISABLE_PASSWORD=true`). This includes lifecycle operations, resource creation/deletion, and image pulls. A connection marked read-only rejects the same operations in the shared backend core.
 
 For a remote TLS Engine, mount certificates read-only and configure their **backend file paths** in the connection:
 
@@ -56,6 +56,19 @@ sudo -n -- true
 
 For Sudo-NC, grant only the command and socket path required by your environment. DBX never sends an interactive sudo password.
 
-## First-version scope
+## Management capabilities and limits
 
-The workbench provides read-only lists for containers, images, volumes, and networks; container start/stop/restart; container summary; session-only 15-minute trends; and raw Inspect JSON. It does not invoke the Docker or Compose CLI. Container creation/deletion, image pulls, logs, exec terminals, Compose lifecycle operations, Windows named pipes, and persistent monitoring are outside this version.
+The workbench provides:
+
+- Compose-grouped and standalone container lists, create/delete, start, pause, resume, restart, and stop.
+- Container overview, a bounded live log stream, session-only 15-minute CPU/memory trends, and read-only file browsing.
+- Image pull/delete/export, including optional per-request private Registry credentials.
+- Volume and network creation.
+
+Registry credentials are sent only in the Docker `X-Registry-Auth` request header. DBX does not save them or include them in application logs.
+
+The file browser runs a fixed read-only `/bin/sh` script with the selected path passed as a separate argument. It does not accept arbitrary commands and does not provide upload, edit, or delete operations. Distroless and scratch containers without `/bin/sh`, `stat`, or `head` show an unsupported-capability error. Text preview is limited to 2 MiB.
+
+Docker image archives and container file downloads can be large. The Web image export route streams the archive from the daemon; clients should still ensure adequate network and local disk capacity.
+
+DBX does not invoke the Docker or Compose CLI. Compose project lifecycle actions, an interactive exec terminal, Windows named pipes, volume/network deletion, file writes, and persistent monitoring remain outside this version.
