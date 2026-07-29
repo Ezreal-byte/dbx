@@ -537,6 +537,8 @@ onUnmounted(() => {
 </template>
 
 <style scoped>
+@reference "../../styles/globals.css";
+
 .resource-node {
   @apply flex h-8 items-center gap-2 rounded px-2 text-left text-muted-foreground hover:bg-muted hover:text-foreground;
 }
