@@ -1,32 +1,38 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref, watch } from "vue";
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import {
   ArrowLeft,
+  ArrowUpDown,
   Box,
   ChevronDown,
   ChevronRight,
-  CirclePause,
-  CircleStop,
+  Copy,
   Download,
   File,
   Folder,
   Pause,
+  Pencil,
   Play,
   Plus,
   RefreshCw,
   RotateCw,
   Search,
+  Square,
   Trash2,
   Upload,
+  LoaderCircle,
 } from "@lucide/vue";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import MetricLineChart from "@/components/chart/MetricLineChart.vue";
 import DatabaseIcon from "@/components/icons/DatabaseIcon.vue";
+import DangerConfirmDialog from "@/components/editor/DangerConfirmDialog.vue";
 import { useToast } from "@/composables/useToast";
 import { hexToRgba } from "@/lib/common/color";
+import { copyToClipboard } from "@/lib/common/clipboard";
+import { isTauriRuntime } from "@/lib/backend/tauriRuntime";
 import * as api from "@/lib/backend/api";
 import type { ConnectionConfig } from "@/types/database";
 import type {
@@ -34,6 +40,7 @@ import type {
   DockerContainer,
   DockerContainerAction,
   DockerContainerStats,
+  DockerComposeApplyRequest,
   DockerCreateContainerRequest,
   DockerCreateNetworkRequest,
   DockerCreateVolumeRequest,
@@ -54,6 +61,7 @@ type ResourceKind = "containers" | "images" | "volumes" | "networks";
 type ContainerFilter = "all" | "running" | "stopped";
 type DetailTab = "overview" | "logs" | "monitoring" | "files";
 type TrendPoint = DockerContainerStats;
+type SortDirection = "asc" | "desc";
 
 const resource = ref<ResourceKind>("containers");
 const filter = ref<ContainerFilter>("all");
@@ -72,8 +80,24 @@ const detailTab = ref<DetailTab>("overview");
 const inspect = ref<Record<string, any>>({});
 const trend = ref<TrendPoint[]>([]);
 const actionInFlight = ref<Record<string, string | undefined>>({});
+const imageActionInFlight = ref<Record<string, string | undefined>>({});
+const sortState = ref<{ key: string; direction: SortDirection }>({ key: "name", direction: "asc" });
+const dangerOpen = ref(false);
+const dangerMessage = ref("");
+let dangerResolve: ((confirmed: boolean) => void) | undefined;
 
 const createContainerOpen = ref(false);
+const createMode = ref<"form" | "compose">("form");
+const composeEditingProject = ref("");
+const composeDraft = ref({
+  projectName: "",
+  content: `services:
+  app:
+    image: nginx:latest
+    ports:
+      - "8080:80"
+`,
+});
 const pullImageOpen = ref(false);
 const createVolumeOpen = ref(false);
 const createNetworkOpen = ref(false);
@@ -102,6 +126,8 @@ const logSearch = ref("");
 const logStream = ref<DockerStreamHandle>();
 const pullStream = ref<DockerStreamHandle>();
 const logError = ref("");
+const logAutoFollow = ref(true);
+const logOutput = ref<HTMLPreElement>();
 const filePath = ref("/");
 const fileEntries = ref<DockerFileEntry[]>([]);
 const filePreview = ref<DockerFilePreview>();
@@ -117,7 +143,8 @@ const workbenchStyle = computed(() => {
   if (!props.connection.color) return undefined;
   return {
     "--docker-accent": props.connection.color,
-    "--docker-accent-soft": hexToRgba(props.connection.color, 0.1),
+    "--docker-accent-soft": hexToRgba(props.connection.color, 0.18),
+    "--docker-accent-faint": hexToRgba(props.connection.color, 0.08),
   };
 });
 
@@ -156,16 +183,58 @@ function formatDate(timestamp: number): string {
   return timestamp > 0 ? new Date(timestamp * 1000).toLocaleString() : "—";
 }
 
+function toggleSort(key: string) {
+  sortState.value =
+    sortState.value.key === key
+      ? { key, direction: sortState.value.direction === "asc" ? "desc" : "asc" }
+      : { key, direction: "asc" };
+}
+
+function sortedBy<T>(values: T[], getter: (value: T, key: string) => string | number | boolean): T[] {
+  const { key, direction } = sortState.value;
+  const factor = direction === "asc" ? 1 : -1;
+  return [...values].sort((left, right) => {
+    const a = getter(left, key);
+    const b = getter(right, key);
+    if (typeof a === "number" && typeof b === "number") return (a - b) * factor;
+    return String(a).localeCompare(String(b), undefined, { numeric: true, sensitivity: "base" }) * factor;
+  });
+}
+
+function containerSortValue(container: DockerContainer, key: string): string | number {
+  if (key === "name") return containerName(container);
+  if (key === "image") return container.image;
+  if (key === "status") return isRunning(container) ? 2 : isPaused(container) ? 1 : 0;
+  if (key === "ports") return formatPorts(container);
+  if (key === "cpu") return listStats.value[container.id]?.cpuPercent ?? -1;
+  if (key === "memory") return listStats.value[container.id]?.memoryUsage ?? -1;
+  return "";
+}
+
+async function copyValue(value: string) {
+  await copyToClipboard(value);
+  toast(t("docker.copied"), 1400);
+}
+
+function containerStatusLabel(container: DockerContainer): string {
+  if (isRunning(container)) return t("docker.running");
+  if (isPaused(container)) return t("docker.paused");
+  return t("docker.stopped");
+}
+
 const matchingContainers = computed(() =>
-  containers.value.filter((container) => {
-    if (filter.value === "running" && !isRunning(container) && !isPaused(container)) return false;
-    if (filter.value === "stopped" && (isRunning(container) || isPaused(container))) return false;
-    if (!normalizedQuery.value) return true;
-    return [container.id, container.image, container.state, container.status, ...container.names, ...Object.values(container.labels)]
-      .join(" ")
-      .toLowerCase()
-      .includes(normalizedQuery.value);
-  }),
+  sortedBy(
+    containers.value.filter((container) => {
+      if (filter.value === "running" && !isRunning(container) && !isPaused(container)) return false;
+      if (filter.value === "stopped" && (isRunning(container) || isPaused(container))) return false;
+      if (!normalizedQuery.value) return true;
+      return [container.id, container.image, container.state, container.status, ...container.names, ...Object.values(container.labels)]
+        .join(" ")
+        .toLowerCase()
+        .includes(normalizedQuery.value);
+    }),
+    containerSortValue,
+  ),
 );
 
 const composeGroups = computed(() => {
@@ -185,17 +254,32 @@ const standaloneContainers = computed(() =>
 );
 
 const filteredImages = computed(() =>
-  images.value.filter((item) =>
-    !normalizedQuery.value
-      ? true
-      : [item.id, ...item.repoTags, ...item.repoDigests].join(" ").toLowerCase().includes(normalizedQuery.value),
+  sortedBy(
+    images.value.filter((item) =>
+      !normalizedQuery.value
+        ? true
+        : [item.id, ...item.repoTags, ...item.repoDigests].join(" ").toLowerCase().includes(normalizedQuery.value),
+    ),
+    (item, key) => {
+      if (key === "name") return item.repoTags.join(",");
+      if (key === "id") return item.id;
+      if (key === "size") return item.size;
+      if (key === "created") return item.created;
+      return "";
+    },
   ),
 );
 const filteredVolumes = computed(() =>
-  volumes.value.filter((item) => !normalizedQuery.value || [item.name, item.driver, item.mountpoint].join(" ").toLowerCase().includes(normalizedQuery.value)),
+  sortedBy(
+    volumes.value.filter((item) => !normalizedQuery.value || [item.name, item.driver, item.mountpoint].join(" ").toLowerCase().includes(normalizedQuery.value)),
+    (item, key) => String((item as any)[key] ?? ""),
+  ),
 );
 const filteredNetworks = computed(() =>
-  networks.value.filter((item) => !normalizedQuery.value || [item.id, item.name, item.driver].join(" ").toLowerCase().includes(normalizedQuery.value)),
+  sortedBy(
+    networks.value.filter((item) => !normalizedQuery.value || [item.id, item.name, item.driver].join(" ").toLowerCase().includes(normalizedQuery.value)),
+    (item, key) => String((item as any)[key] ?? ""),
+  ),
 );
 const visibleLogs = computed(() => {
   if (!logSearch.value.trim()) return logText.value;
@@ -241,6 +325,7 @@ async function selectResource(kind: ResourceKind) {
   await closeDetail();
   resource.value = kind;
   query.value = "";
+  sortState.value = { key: "name", direction: "asc" };
   await loadResource(kind);
 }
 
@@ -267,14 +352,29 @@ async function closeDetail() {
   filePreview.value = undefined;
 }
 
-function confirmAction(container: DockerContainer, action: DockerContainerAction | "remove"): boolean {
-  const dangerous = props.connection.is_production || ["stop", "restart", "remove"].includes(action);
-  if (!dangerous) return true;
-  return window.confirm(t("docker.confirmAction", { action: t(`docker.action.${action}`), name: containerName(container) }));
+function requestConfirmation(message: string): Promise<boolean> {
+  dangerMessage.value = message;
+  dangerOpen.value = true;
+  return new Promise((resolve) => {
+    dangerResolve = resolve;
+  });
 }
 
-function confirmProductionMutation(action: string): boolean {
-  return !props.connection.is_production || window.confirm(t("docker.confirmProductionMutation", { action }));
+function settleConfirmation(confirmed: boolean) {
+  const resolve = dangerResolve;
+  dangerResolve = undefined;
+  dangerOpen.value = false;
+  resolve?.(confirmed);
+}
+
+async function confirmAction(container: DockerContainer, action: DockerContainerAction | "remove"): Promise<boolean> {
+  const dangerous = props.connection.is_production || ["stop", "restart", "remove"].includes(action);
+  if (!dangerous) return true;
+  return requestConfirmation(t("docker.confirmAction", { action: t(`docker.action.${action}`), name: containerName(container) }));
+}
+
+async function confirmProductionMutation(action: string): Promise<boolean> {
+  return !props.connection.is_production || requestConfirmation(t("docker.confirmProductionMutation", { action }));
 }
 
 async function runAction(container: DockerContainer, action: DockerContainerAction) {
@@ -282,7 +382,7 @@ async function runAction(container: DockerContainer, action: DockerContainerActi
     if (isReadOnly.value) toast(t("docker.readOnly"), 2400);
     return;
   }
-  if (!confirmAction(container, action)) return;
+  if (!(await confirmAction(container, action))) return;
   actionInFlight.value = { ...actionInFlight.value, [container.id]: action };
   try {
     await api.dockerContainerAction(props.connection.id, container.id, action);
@@ -300,7 +400,7 @@ async function runAction(container: DockerContainer, action: DockerContainerActi
 
 async function removeContainer(container: DockerContainer) {
   if (isReadOnly.value || actionInFlight.value[container.id]) return;
-  if (!confirmAction(container, "remove")) return;
+  if (!(await confirmAction(container, "remove"))) return;
   actionInFlight.value = { ...actionInFlight.value, [container.id]: "remove" };
   try {
     await api.dockerRemoveContainer(props.connection.id, container.id);
@@ -363,6 +463,7 @@ function createContainerRequest(): DockerCreateContainerRequest {
     environment: createContainerDraft.value.environment.split(/\r?\n/).map((value) => value.trim()).filter(Boolean),
     ports,
     mounts,
+    labels: {},
     network: createContainerDraft.value.network || undefined,
     restartPolicy: createContainerDraft.value.restartPolicy as DockerCreateContainerRequest["restartPolicy"],
     start: createContainerDraft.value.start,
@@ -370,7 +471,7 @@ function createContainerRequest(): DockerCreateContainerRequest {
 }
 
 async function createContainer() {
-  if (!confirmProductionMutation(t("docker.createContainer"))) return;
+  if (!(await confirmProductionMutation(t("docker.createContainer")))) return;
   submitting.value = true;
   try {
     await api.dockerCreateContainer(props.connection.id, createContainerRequest());
@@ -392,11 +493,94 @@ async function openCreateContainer() {
       // The form remains usable with Docker's default network.
     }
   }
+  createMode.value = "form";
+  composeEditingProject.value = "";
   createContainerOpen.value = true;
 }
 
+function composePortLines(value: any): string[] {
+  const bindings = value?.HostConfig?.PortBindings ?? {};
+  return Object.entries(bindings).flatMap(([containerPort, entries]: [string, any]) => {
+    const [port, protocol = "tcp"] = containerPort.split("/");
+    if (!Array.isArray(entries) || !entries.length) return [`${port}/${protocol}`];
+    return entries.map((entry) => {
+      const host = [entry.HostIp, entry.HostPort].filter(Boolean).join(":");
+      return `${host ? `${host}:` : ""}${port}/${protocol}`;
+    });
+  });
+}
+
+async function openComposeEditor(project = "") {
+  createMode.value = "compose";
+  composeEditingProject.value = project;
+  composeDraft.value.projectName = project;
+  if (project) {
+    const projectContainers = containers.value.filter(
+      (container) => container.labels["com.docker.compose.project"] === project,
+    );
+    const services: Record<string, any> = {};
+    for (const container of projectContainers) {
+      const value: any = await api.dockerInspectContainer(props.connection.id, container.id);
+      const service = container.labels["com.docker.compose.service"] || containerName(container);
+      const mounts = (value.Mounts ?? []).map((mount: any) =>
+        `${mount.Name || mount.Source}:${mount.Destination}${mount.RW === false ? ":ro" : ""}`,
+      );
+      const networkNames = Object.keys(value.NetworkSettings?.Networks ?? {}).map((name) =>
+        name.startsWith(`${project}_`) ? name.slice(project.length + 1) : name,
+      );
+      services[service] = {
+        image: value.Config?.Image || container.image,
+        container_name: value.Name?.replace(/^\//, "") || containerName(container),
+        ...(value.Config?.Cmd?.length ? { command: value.Config.Cmd } : {}),
+        ...(value.Config?.Env?.length ? { environment: value.Config.Env } : {}),
+        ...(composePortLines(value).length ? { ports: composePortLines(value) } : {}),
+        ...(mounts.length ? { volumes: mounts } : {}),
+        ...(networkNames.length ? { networks: networkNames } : {}),
+        ...(value.HostConfig?.RestartPolicy?.Name && value.HostConfig.RestartPolicy.Name !== "no"
+          ? { restart: value.HostConfig.RestartPolicy.Name }
+          : {}),
+      };
+    }
+    composeDraft.value.content = JSON.stringify({ services }, null, 2);
+  } else {
+    composeDraft.value = {
+      projectName: "",
+      content: `services:
+  app:
+    image: nginx:latest
+    ports:
+      - "8080:80"
+`,
+    };
+  }
+  createContainerOpen.value = true;
+}
+
+async function applyCompose() {
+  const editing = !!composeEditingProject.value;
+  if (!(await confirmProductionMutation(editing ? t("docker.editCompose") : t("docker.createCompose")))) return;
+  if (editing && !(await requestConfirmation(t("docker.confirmComposeReplace", { project: composeEditingProject.value })))) return;
+  submitting.value = true;
+  try {
+    const request: DockerComposeApplyRequest = {
+      projectName: composeDraft.value.projectName.trim(),
+      content: composeDraft.value.content,
+      replaceExisting: editing,
+    };
+    const result = await api.dockerApplyCompose(props.connection.id, request);
+    createContainerOpen.value = false;
+    toast(t(editing ? "docker.composeUpdated" : "docker.composeCreated", { count: result.containerIds.length }), 3000);
+    if (result.warnings.length) toast(result.warnings.join("\n"), 5000);
+    await loadContainers();
+  } catch (cause: any) {
+    toast(cause?.message || String(cause), 5000);
+  } finally {
+    submitting.value = false;
+  }
+}
+
 async function pullImage() {
-  if (!confirmProductionMutation(t("docker.pullImage"))) return;
+  if (!(await confirmProductionMutation(t("docker.pullImage")))) return;
   pulling.value = true;
   pullProgress.value = "";
   try {
@@ -449,27 +633,47 @@ function downloadBytes(bytes: Uint8Array | string, fileName: string, type = "app
 }
 
 async function exportImage(item: DockerImage) {
+  if (imageActionInFlight.value[item.id]) return;
+  imageActionInFlight.value = { ...imageActionInFlight.value, [item.id]: "export" };
   try {
-    const bytes = await api.dockerExportImage(props.connection.id, item.id);
-    downloadBytes(bytes, `${shortId(item.id)}.tar`);
+    const baseName = (item.repoTags[0] || shortId(item.id)).replace(/[\\/:*?"<>|]+/g, "_");
+    if (isTauriRuntime()) {
+      const { save } = await import("@tauri-apps/plugin-dialog");
+      const destination = await save({
+        defaultPath: `${baseName}.tar`,
+        filters: [{ name: "Docker image", extensions: ["tar"] }],
+      });
+      if (!destination) return;
+      await api.dockerExportImageToPath(props.connection.id, item.id, destination);
+    } else {
+      const bytes = await api.dockerExportImage(props.connection.id, item.id);
+      downloadBytes(bytes, `${baseName}.tar`);
+    }
+    toast(t("docker.imageExported"), 2400);
   } catch (cause: any) {
     toast(cause?.message || String(cause), 5000);
+  } finally {
+    imageActionInFlight.value = { ...imageActionInFlight.value, [item.id]: undefined };
   }
 }
 
 async function removeImage(item: DockerImage) {
-  if (!window.confirm(t("docker.confirmImageRemove", { name: item.repoTags[0] || shortId(item.id) }))) return;
+  if (imageActionInFlight.value[item.id]) return;
+  if (!(await requestConfirmation(t("docker.confirmImageRemove", { name: item.repoTags[0] || shortId(item.id) })))) return;
+  imageActionInFlight.value = { ...imageActionInFlight.value, [item.id]: "remove" };
   try {
     await api.dockerRemoveImage(props.connection.id, item.id);
     toast(t("docker.imageRemoved"), 2400);
     await loadResource("images");
   } catch (cause: any) {
     toast(cause?.message || String(cause), 5000);
+  } finally {
+    imageActionInFlight.value = { ...imageActionInFlight.value, [item.id]: undefined };
   }
 }
 
 async function createVolume() {
-  if (!confirmProductionMutation(t("docker.createVolume"))) return;
+  if (!(await confirmProductionMutation(t("docker.createVolume")))) return;
   submitting.value = true;
   try {
     const request: DockerCreateVolumeRequest = {
@@ -490,7 +694,7 @@ async function createVolume() {
 }
 
 async function createNetwork() {
-  if (!confirmProductionMutation(t("docker.createNetwork"))) return;
+  if (!(await confirmProductionMutation(t("docker.createNetwork")))) return;
   submitting.value = true;
   try {
     const request: DockerCreateNetworkRequest = {
@@ -522,11 +726,24 @@ function appendLogs(chunk: string) {
   const lines = logText.value.split("\n");
   if (lines.length > 10_000) logText.value = lines.slice(-10_000).join("\n");
   if (logText.value.length > 5 * 1024 * 1024) logText.value = logText.value.slice(-5 * 1024 * 1024);
+  if (logAutoFollow.value) void nextTick(scrollLogsToBottom);
+}
+
+function scrollLogsToBottom() {
+  const output = logOutput.value;
+  if (output) output.scrollTop = output.scrollHeight;
+}
+
+function handleLogScroll() {
+  const output = logOutput.value;
+  if (!output) return;
+  logAutoFollow.value = output.scrollHeight - output.scrollTop - output.clientHeight < 24;
 }
 
 async function startLogs() {
   if (!selectedContainer.value || logStream.value) return;
   logError.value = "";
+  logAutoFollow.value = true;
   try {
     logStream.value = await api.dockerStartLogs(props.connection.id, selectedContainer.value.id, { tail: 500, timestamps: false }, (event) => {
       if (event.chunk) appendLogs(event.chunk);
@@ -556,6 +773,7 @@ function toggleLogPause() {
 function clearLogs() {
   logText.value = "";
   pendingLogText.value = "";
+  if (logAutoFollow.value) void nextTick(scrollLogsToBottom);
 }
 
 async function loadFiles(path = filePath.value) {
@@ -661,6 +879,9 @@ watch(resource, restartListSampling);
 watch(pullImageOpen, (open) => {
   if (!open) void stopImagePull();
 });
+watch(dangerOpen, (open) => {
+  if (!open && dangerResolve) settleConfirmation(false);
+});
 
 onMounted(async () => {
   document.addEventListener("visibilitychange", restartDetailSampling);
@@ -679,15 +900,14 @@ onUnmounted(() => {
 
 <template>
   <div class="flex h-full min-h-0 flex-col bg-background text-foreground" :style="workbenchStyle">
-    <header class="docker-header flex h-14 shrink-0 items-center border-b px-4">
-      <div class="flex min-w-0 items-center gap-2.5">
-        <DatabaseIcon db-type="docker" class="h-7 w-7 shrink-0" />
+    <header class="docker-header flex h-10 shrink-0 items-center border-b px-3">
+      <div class="flex min-w-0 items-center gap-2">
+        <DatabaseIcon db-type="docker" class="h-5 w-5 shrink-0" />
         <div class="min-w-0">
-          <div class="truncate text-sm font-semibold">{{ connection.name }}</div>
-          <div class="text-[11px] text-muted-foreground">Docker Workbench</div>
+          <div class="max-w-40 truncate text-xs font-semibold">{{ connection.name }}</div>
         </div>
       </div>
-      <nav class="ml-8 flex h-full items-end gap-1">
+      <nav class="ml-5 flex h-full items-end gap-0.5">
         <button
           v-for="kind in ['containers', 'images', 'volumes', 'networks'] as ResourceKind[]"
           :key="kind"
@@ -698,7 +918,7 @@ onUnmounted(() => {
           {{ t(`docker.${kind}`) }}
         </button>
       </nav>
-      <div class="ml-auto flex items-center gap-2 text-xs text-muted-foreground">
+      <div class="ml-auto flex items-center gap-1.5 text-[11px] text-muted-foreground">
         <span v-if="engineInfo">Engine {{ engineInfo.engineVersion }} · API {{ engineInfo.apiVersion }}</span>
         <span class="h-2.5 w-2.5 rounded-full" :class="engineInfo ? 'bg-emerald-500' : 'bg-destructive'" />
         <span>{{ engineInfo ? t("docker.connected") : t("docker.disconnected") }}</span>
@@ -768,12 +988,13 @@ onUnmounted(() => {
                 <Input v-model="logSearch" class="pl-8" :placeholder="t('docker.searchLogs')" />
               </div>
               <Button size="sm" variant="outline" @click="toggleLogPause"><Play v-if="logPaused" /><Pause v-else />{{ logPaused ? t("docker.resume") : t("docker.pause") }}</Button>
+              <label class="flex items-center gap-1.5 text-xs text-muted-foreground"><input v-model="logAutoFollow" type="checkbox" @change="logAutoFollow && scrollLogsToBottom()" />{{ t("docker.autoFollowLogs") }}</label>
               <Button size="sm" variant="outline" @click="clearLogs">{{ t("docker.clear") }}</Button>
               <Button size="sm" variant="outline" @click="downloadBytes(logText, `${containerName(selectedContainer)}.log`, 'text/plain;charset=utf-8')"><Download />{{ t("docker.download") }}</Button>
               <span v-if="pendingLogText" class="text-xs text-amber-600">{{ t("docker.bufferedLogs") }}</span>
             </div>
             <div v-if="logError" class="mb-2 text-sm text-destructive">{{ logError }}</div>
-            <pre class="min-h-0 flex-1 overflow-auto rounded-md bg-zinc-950 p-3 font-mono text-xs leading-5 text-zinc-100">{{ visibleLogs || t("docker.waitingForLogs") }}</pre>
+            <pre ref="logOutput" class="min-h-0 flex-1 overflow-auto rounded-md bg-zinc-950 p-3 font-mono text-xs leading-5 text-zinc-100" @scroll.passive="handleLogScroll">{{ visibleLogs || t("docker.waitingForLogs") }}</pre>
           </div>
 
           <div v-else-if="detailTab === 'monitoring'" class="grid gap-3 xl:grid-cols-2">
@@ -830,7 +1051,15 @@ onUnmounted(() => {
 
         <div class="min-h-0 flex-1 overflow-auto">
           <table v-if="resource === 'containers'" class="docker-table">
-            <thead><tr><th>{{ t("docker.name") }}</th><th>{{ t("docker.image") }}</th><th>{{ t("docker.ports") }}</th><th>CPU</th><th>{{ t("docker.memory") }}</th><th class="text-right">{{ t("docker.actions") }}</th></tr></thead>
+            <thead><tr>
+              <th><button class="docker-sort" @click="toggleSort('name')">{{ t("docker.name") }}<ArrowUpDown /></button></th>
+              <th><button class="docker-sort" @click="toggleSort('status')">{{ t("docker.status") }}<ArrowUpDown /></button></th>
+              <th><button class="docker-sort" @click="toggleSort('image')">{{ t("docker.image") }}<ArrowUpDown /></button></th>
+              <th><button class="docker-sort" @click="toggleSort('ports')">{{ t("docker.ports") }}<ArrowUpDown /></button></th>
+              <th><button class="docker-sort" @click="toggleSort('cpu')">CPU<ArrowUpDown /></button></th>
+              <th><button class="docker-sort" @click="toggleSort('memory')">{{ t("docker.memory") }}<ArrowUpDown /></button></th>
+              <th class="text-right">{{ t("docker.actions") }}</th>
+            </tr></thead>
             <tbody>
               <template v-for="[project, values] in composeGroups" :key="project">
                 <tr class="bg-muted/25 font-medium">
@@ -840,36 +1069,40 @@ onUnmounted(() => {
                       <Box class="h-4 w-4 text-sky-500" />{{ project }}<span class="rounded bg-muted px-1.5 text-xs text-muted-foreground">{{ values.length }}</span>
                     </button>
                   </td>
+                  <td><div class="flex justify-end"><Button size="sm" variant="ghost" :disabled="isReadOnly" @click="openComposeEditor(project)"><Pencil />{{ t("docker.editCompose") }}</Button></div></td>
                 </tr>
                 <tr v-for="container in expandedProjects.has(project) ? values : []" :key="container.id">
-                  <td><div class="flex items-center gap-2 pl-6"><span class="h-2.5 w-2.5 rounded-full" :class="isRunning(container) ? 'bg-emerald-500' : isPaused(container) ? 'bg-amber-500' : 'bg-zinc-400'" /><button class="font-medium hover:underline" @click="openDetail(container)">{{ containerName(container) }}</button></div></td>
-                  <td class="max-w-64 truncate">{{ container.image }}</td><td class="max-w-72 truncate font-mono text-xs">{{ formatPorts(container) }}</td>
+                  <td><div class="docker-copy-cell pl-6"><span class="h-2.5 w-2.5 shrink-0 rounded-full" :class="isRunning(container) ? 'bg-emerald-500' : isPaused(container) ? 'bg-amber-500' : 'bg-zinc-400'" /><button class="truncate font-medium hover:underline" @click="openDetail(container)">{{ containerName(container) }}</button><button class="docker-copy-button" :title="t('docker.copy')" @click="copyValue(containerName(container))"><Copy /></button></div></td>
+                  <td><span class="docker-status" :class="isRunning(container) ? 'running' : isPaused(container) ? 'paused' : 'stopped'">{{ containerStatusLabel(container) }}</span></td>
+                  <td><div class="docker-copy-cell max-w-64"><span class="truncate">{{ container.image }}</span><button class="docker-copy-button" :title="t('docker.copy')" @click="copyValue(container.image)"><Copy /></button></div></td>
+                  <td class="max-w-72 truncate font-mono text-xs">{{ formatPorts(container) }}</td>
                   <td>{{ listStats[container.id] ? `${listStats[container.id].cpuPercent.toFixed(1)}%` : "—" }}</td>
                   <td>{{ listStats[container.id] ? `${formatBytes(listStats[container.id].memoryUsage)} / ${formatBytes(listStats[container.id].memoryLimit)}` : "—" }}</td>
-                  <td><div class="flex justify-end gap-1"><Button v-if="isRunning(container)" size="icon-sm" variant="ghost" :title="t('docker.pause')" @click="runAction(container, 'pause')"><CirclePause /></Button><Button v-if="isPaused(container)" size="icon-sm" variant="ghost" :title="t('docker.resume')" @click="runAction(container, 'unpause')"><Play /></Button><Button v-if="isRunning(container) || isPaused(container)" size="icon-sm" variant="ghost" :title="t('docker.restart')" @click="runAction(container, 'restart')"><RotateCw /></Button><Button v-if="isRunning(container) || isPaused(container)" size="icon-sm" variant="ghost" :title="t('docker.stop')" @click="runAction(container, 'stop')"><CircleStop /></Button><Button v-if="!isRunning(container) && !isPaused(container)" size="icon-sm" variant="ghost" :title="t('docker.start')" @click="runAction(container, 'start')"><Play /></Button><Button v-if="!isRunning(container) && !isPaused(container) && !isReadOnly" size="icon-sm" variant="ghost" :title="t('docker.remove')" @click="removeContainer(container)"><Trash2 /></Button><Button size="sm" variant="ghost" @click="openDetail(container)">{{ t("docker.details") }}</Button></div></td>
+                  <td><div class="flex justify-end gap-1"><Button v-if="isRunning(container)" size="icon-sm" variant="ghost" :disabled="!!actionInFlight[container.id]" :title="t('docker.pause')" @click="runAction(container, 'pause')"><LoaderCircle v-if="actionInFlight[container.id] === 'pause'" class="animate-spin" /><Pause v-else /></Button><Button v-if="isPaused(container)" size="icon-sm" variant="ghost" :disabled="!!actionInFlight[container.id]" :title="t('docker.resume')" @click="runAction(container, 'unpause')"><LoaderCircle v-if="actionInFlight[container.id] === 'unpause'" class="animate-spin" /><Play v-else /></Button><Button v-if="isRunning(container) || isPaused(container)" size="icon-sm" variant="ghost" :disabled="!!actionInFlight[container.id]" :title="t('docker.restart')" @click="runAction(container, 'restart')"><LoaderCircle v-if="actionInFlight[container.id] === 'restart'" class="animate-spin" /><RotateCw v-else /></Button><Button v-if="isRunning(container) || isPaused(container)" size="icon-sm" variant="ghost" :disabled="!!actionInFlight[container.id]" :title="t('docker.stop')" @click="runAction(container, 'stop')"><LoaderCircle v-if="actionInFlight[container.id] === 'stop'" class="animate-spin" /><Square v-else /></Button><Button v-if="!isRunning(container) && !isPaused(container)" size="icon-sm" variant="ghost" :disabled="!!actionInFlight[container.id]" :title="t('docker.start')" @click="runAction(container, 'start')"><LoaderCircle v-if="actionInFlight[container.id] === 'start'" class="animate-spin" /><Play v-else /></Button><Button v-if="!isRunning(container) && !isPaused(container) && !isReadOnly" size="icon-sm" variant="ghost" :disabled="!!actionInFlight[container.id]" :title="t('docker.remove')" @click="removeContainer(container)"><LoaderCircle v-if="actionInFlight[container.id] === 'remove'" class="animate-spin" /><Trash2 v-else /></Button><Button size="sm" variant="ghost" @click="openDetail(container)">{{ t("docker.details") }}</Button></div></td>
                 </tr>
               </template>
               <tr v-for="container in standaloneContainers" :key="container.id">
-                <td><div class="flex items-center gap-2"><span class="h-2.5 w-2.5 rounded-full" :class="isRunning(container) ? 'bg-emerald-500' : isPaused(container) ? 'bg-amber-500' : 'bg-zinc-400'" /><button class="font-medium hover:underline" @click="openDetail(container)">{{ containerName(container) }}</button></div></td>
-                <td class="max-w-64 truncate">{{ container.image }}</td><td class="max-w-72 truncate font-mono text-xs">{{ formatPorts(container) }}</td>
+                <td><div class="docker-copy-cell"><span class="h-2.5 w-2.5 shrink-0 rounded-full" :class="isRunning(container) ? 'bg-emerald-500' : isPaused(container) ? 'bg-amber-500' : 'bg-zinc-400'" /><button class="truncate font-medium hover:underline" @click="openDetail(container)">{{ containerName(container) }}</button><button class="docker-copy-button" :title="t('docker.copy')" @click="copyValue(containerName(container))"><Copy /></button></div></td>
+                <td><span class="docker-status" :class="isRunning(container) ? 'running' : isPaused(container) ? 'paused' : 'stopped'">{{ containerStatusLabel(container) }}</span></td>
+                <td><div class="docker-copy-cell max-w-64"><span class="truncate">{{ container.image }}</span><button class="docker-copy-button" :title="t('docker.copy')" @click="copyValue(container.image)"><Copy /></button></div></td><td class="max-w-72 truncate font-mono text-xs">{{ formatPorts(container) }}</td>
                 <td>{{ listStats[container.id] ? `${listStats[container.id].cpuPercent.toFixed(1)}%` : "—" }}</td>
                 <td>{{ listStats[container.id] ? `${formatBytes(listStats[container.id].memoryUsage)} / ${formatBytes(listStats[container.id].memoryLimit)}` : "—" }}</td>
-                <td><div class="flex justify-end gap-1"><Button v-if="isRunning(container)" size="icon-sm" variant="ghost" @click="runAction(container, 'pause')"><CirclePause /></Button><Button v-if="isPaused(container)" size="icon-sm" variant="ghost" @click="runAction(container, 'unpause')"><Play /></Button><Button v-if="isRunning(container) || isPaused(container)" size="icon-sm" variant="ghost" @click="runAction(container, 'restart')"><RotateCw /></Button><Button v-if="isRunning(container) || isPaused(container)" size="icon-sm" variant="ghost" @click="runAction(container, 'stop')"><CircleStop /></Button><Button v-if="!isRunning(container) && !isPaused(container)" size="icon-sm" variant="ghost" @click="runAction(container, 'start')"><Play /></Button><Button v-if="!isRunning(container) && !isPaused(container) && !isReadOnly" size="icon-sm" variant="ghost" @click="removeContainer(container)"><Trash2 /></Button><Button size="sm" variant="ghost" @click="openDetail(container)">{{ t("docker.details") }}</Button></div></td>
+                <td><div class="flex justify-end gap-1"><Button v-if="isRunning(container)" size="icon-sm" variant="ghost" :disabled="!!actionInFlight[container.id]" :title="t('docker.pause')" @click="runAction(container, 'pause')"><LoaderCircle v-if="actionInFlight[container.id] === 'pause'" class="animate-spin" /><Pause v-else /></Button><Button v-if="isPaused(container)" size="icon-sm" variant="ghost" :disabled="!!actionInFlight[container.id]" :title="t('docker.resume')" @click="runAction(container, 'unpause')"><LoaderCircle v-if="actionInFlight[container.id] === 'unpause'" class="animate-spin" /><Play v-else /></Button><Button v-if="isRunning(container) || isPaused(container)" size="icon-sm" variant="ghost" :disabled="!!actionInFlight[container.id]" :title="t('docker.restart')" @click="runAction(container, 'restart')"><LoaderCircle v-if="actionInFlight[container.id] === 'restart'" class="animate-spin" /><RotateCw v-else /></Button><Button v-if="isRunning(container) || isPaused(container)" size="icon-sm" variant="ghost" :disabled="!!actionInFlight[container.id]" :title="t('docker.stop')" @click="runAction(container, 'stop')"><LoaderCircle v-if="actionInFlight[container.id] === 'stop'" class="animate-spin" /><Square v-else /></Button><Button v-if="!isRunning(container) && !isPaused(container)" size="icon-sm" variant="ghost" :disabled="!!actionInFlight[container.id]" :title="t('docker.start')" @click="runAction(container, 'start')"><LoaderCircle v-if="actionInFlight[container.id] === 'start'" class="animate-spin" /><Play v-else /></Button><Button v-if="!isRunning(container) && !isPaused(container) && !isReadOnly" size="icon-sm" variant="ghost" :disabled="!!actionInFlight[container.id]" :title="t('docker.remove')" @click="removeContainer(container)"><LoaderCircle v-if="actionInFlight[container.id] === 'remove'" class="animate-spin" /><Trash2 v-else /></Button><Button size="sm" variant="ghost" @click="openDetail(container)">{{ t("docker.details") }}</Button></div></td>
               </tr>
             </tbody>
           </table>
 
           <table v-else-if="resource === 'images'" class="docker-table">
-            <thead><tr><th>{{ t("docker.repositoryTag") }}</th><th>ID</th><th>{{ t("docker.size") }}</th><th>{{ t("docker.created") }}</th><th class="text-right">{{ t("docker.actions") }}</th></tr></thead>
-            <tbody><tr v-for="item in filteredImages" :key="item.id"><td>{{ item.repoTags.join(", ") || "&lt;none&gt;" }}</td><td class="font-mono text-xs">{{ shortId(item.id) }}</td><td>{{ formatBytes(item.size) }}</td><td>{{ formatDate(item.created) }}</td><td><div class="flex justify-end gap-1"><Button size="sm" variant="ghost" @click="exportImage(item)"><Upload />{{ t("docker.export") }}</Button><Button size="icon-sm" variant="ghost" :disabled="isReadOnly" @click="removeImage(item)"><Trash2 /></Button></div></td></tr></tbody>
+            <thead><tr><th class="docker-image-name-column"><div class="docker-resizable-column"><button class="docker-sort" @click="toggleSort('name')">{{ t("docker.repositoryTag") }}<ArrowUpDown /></button></div></th><th><button class="docker-sort" @click="toggleSort('id')">ID<ArrowUpDown /></button></th><th><button class="docker-sort" @click="toggleSort('size')">{{ t("docker.size") }}<ArrowUpDown /></button></th><th><button class="docker-sort" @click="toggleSort('created')">{{ t("docker.created") }}<ArrowUpDown /></button></th><th class="text-right">{{ t("docker.actions") }}</th></tr></thead>
+            <tbody><tr v-for="item in filteredImages" :key="item.id"><td class="docker-image-name-column"><div class="docker-copy-cell"><span class="truncate">{{ item.repoTags.join(", ") || "&lt;none&gt;" }}</span><button class="docker-copy-button" :title="t('docker.copy')" @click="copyValue(item.repoTags.join(', ') || item.id)"><Copy /></button></div></td><td class="font-mono text-xs"><div class="docker-copy-cell"><span>{{ shortId(item.id) }}</span><button class="docker-copy-button" :title="t('docker.copy')" @click="copyValue(item.id)"><Copy /></button></div></td><td>{{ formatBytes(item.size) }}</td><td>{{ formatDate(item.created) }}</td><td><div class="flex justify-end gap-1"><Button size="sm" variant="ghost" :disabled="!!imageActionInFlight[item.id]" @click="exportImage(item)"><LoaderCircle v-if="imageActionInFlight[item.id] === 'export'" class="animate-spin" /><Upload v-else />{{ t("docker.export") }}</Button><Button size="icon-sm" variant="ghost" :disabled="isReadOnly || !!imageActionInFlight[item.id]" @click="removeImage(item)"><LoaderCircle v-if="imageActionInFlight[item.id] === 'remove'" class="animate-spin" /><Trash2 v-else /></Button></div></td></tr></tbody>
           </table>
           <table v-else-if="resource === 'volumes'" class="docker-table">
-            <thead><tr><th>{{ t("docker.name") }}</th><th>Driver</th><th>Scope</th><th>{{ t("docker.mountpoint") }}</th></tr></thead>
+            <thead><tr><th><button class="docker-sort" @click="toggleSort('name')">{{ t("docker.name") }}<ArrowUpDown /></button></th><th><button class="docker-sort" @click="toggleSort('driver')">Driver<ArrowUpDown /></button></th><th><button class="docker-sort" @click="toggleSort('scope')">Scope<ArrowUpDown /></button></th><th><button class="docker-sort" @click="toggleSort('mountpoint')">{{ t("docker.mountpoint") }}<ArrowUpDown /></button></th></tr></thead>
             <tbody><tr v-for="item in filteredVolumes" :key="item.name"><td class="font-medium">{{ item.name }}</td><td>{{ item.driver }}</td><td>{{ item.scope }}</td><td class="font-mono text-xs">{{ item.mountpoint }}</td></tr></tbody>
           </table>
           <table v-else class="docker-table">
-            <thead><tr><th>{{ t("docker.name") }}</th><th>ID</th><th>Driver</th><th>Scope</th><th>Internal</th><th>Attachable</th></tr></thead>
-            <tbody><tr v-for="item in filteredNetworks" :key="item.id"><td class="font-medium">{{ item.name }}</td><td class="font-mono text-xs">{{ shortId(item.id) }}</td><td>{{ item.driver }}</td><td>{{ item.scope }}</td><td>{{ item.internal ? t("common.yes") : t("common.no") }}</td><td>{{ item.attachable ? t("common.yes") : t("common.no") }}</td></tr></tbody>
+            <thead><tr><th><button class="docker-sort" @click="toggleSort('name')">{{ t("docker.name") }}<ArrowUpDown /></button></th><th><button class="docker-sort" @click="toggleSort('id')">ID<ArrowUpDown /></button></th><th><button class="docker-sort" @click="toggleSort('driver')">Driver<ArrowUpDown /></button></th><th><button class="docker-sort" @click="toggleSort('scope')">Scope<ArrowUpDown /></button></th><th><button class="docker-sort" @click="toggleSort('internal')">Internal<ArrowUpDown /></button></th><th><button class="docker-sort" @click="toggleSort('attachable')">Attachable<ArrowUpDown /></button></th></tr></thead>
+            <tbody><tr v-for="item in filteredNetworks" :key="item.id"><td class="font-medium">{{ item.name }}</td><td class="font-mono text-xs">{{ shortId(item.id) }}</td><td>{{ item.driver }}</td><td>{{ item.scope }}</td><td>{{ item.internal ? "✓" : "—" }}</td><td>{{ item.attachable ? "✓" : "—" }}</td></tr></tbody>
           </table>
         </div>
       </template>
@@ -878,7 +1111,11 @@ onUnmounted(() => {
     <Dialog v-model:open="createContainerOpen">
       <DialogContent class="max-h-[88vh] max-w-3xl overflow-auto">
         <DialogHeader><DialogTitle>{{ t("docker.createContainer") }}</DialogTitle><DialogDescription>{{ t("docker.createContainerDescription") }}</DialogDescription></DialogHeader>
-        <div class="grid gap-4 py-2 md:grid-cols-2">
+        <div class="flex w-fit rounded-md border bg-muted/20 p-0.5">
+          <button class="rounded px-3 py-1.5 text-xs" :class="createMode === 'form' ? 'bg-background font-medium shadow-sm' : 'text-muted-foreground'" @click="createMode = 'form'">{{ t("docker.formMode") }}</button>
+          <button class="rounded px-3 py-1.5 text-xs" :class="createMode === 'compose' ? 'bg-background font-medium shadow-sm' : 'text-muted-foreground'" @click="openComposeEditor(composeEditingProject)">{{ t("docker.composeMode") }}</button>
+        </div>
+        <div v-if="createMode === 'form'" class="grid gap-4 py-2 md:grid-cols-2">
           <label class="docker-field"><span>{{ t("docker.name") }}</span><Input v-model="createContainerDraft.name" /></label>
           <label class="docker-field"><span>{{ t("docker.image") }}</span><Input v-model="createContainerDraft.image" placeholder="nginx:latest" /></label>
           <label class="docker-field"><span>{{ t("docker.commandLines") }}</span><textarea v-model="createContainerDraft.command" rows="4" class="docker-textarea" /></label>
@@ -889,7 +1126,12 @@ onUnmounted(() => {
           <label class="docker-field"><span>{{ t("docker.restartPolicy") }}</span><select v-model="createContainerDraft.restartPolicy" class="docker-select"><option value="no">no</option><option value="always">always</option><option value="unless-stopped">unless-stopped</option><option value="on-failure">on-failure</option></select></label>
           <label class="flex items-center gap-2 text-sm"><input v-model="createContainerDraft.start" type="checkbox" />{{ t("docker.startAfterCreate") }}</label>
         </div>
-        <DialogFooter><Button variant="outline" @click="createContainerOpen = false">{{ t("common.cancel") }}</Button><Button :disabled="submitting || !createContainerDraft.name.trim() || !createContainerDraft.image.trim()" @click="createContainer">{{ t("docker.create") }}</Button></DialogFooter>
+        <div v-else class="space-y-3 py-2">
+          <label class="docker-field"><span>{{ t("docker.composeProject") }}</span><Input v-model="composeDraft.projectName" :disabled="!!composeEditingProject" placeholder="my-project" /></label>
+          <label class="docker-field"><span>compose.yaml</span><textarea v-model="composeDraft.content" rows="20" class="docker-textarea min-h-80" spellcheck="false" /></label>
+          <p class="m-0 text-xs text-muted-foreground">{{ t("docker.composeSubsetHint") }}</p>
+        </div>
+        <DialogFooter><Button variant="outline" @click="createContainerOpen = false">{{ t("common.cancel") }}</Button><Button v-if="createMode === 'form'" :disabled="submitting || !createContainerDraft.name.trim() || !createContainerDraft.image.trim()" @click="createContainer"><LoaderCircle v-if="submitting" class="animate-spin" />{{ t("docker.create") }}</Button><Button v-else :disabled="submitting || !composeDraft.projectName.trim() || !composeDraft.content.trim()" @click="applyCompose"><LoaderCircle v-if="submitting" class="animate-spin" />{{ composeEditingProject ? t("docker.saveCompose") : t("docker.create") }}</Button></DialogFooter>
       </DialogContent>
     </Dialog>
 
@@ -908,12 +1150,13 @@ onUnmounted(() => {
     <Dialog v-model:open="createNetworkOpen">
       <DialogContent><DialogHeader><DialogTitle>{{ t("docker.createNetwork") }}</DialogTitle></DialogHeader><div class="grid grid-cols-2 gap-3 py-2"><label class="docker-field"><span>{{ t("docker.name") }}</span><Input v-model="networkDraft.name" /></label><label class="docker-field"><span>Driver</span><Input v-model="networkDraft.driver" /></label><label class="docker-field"><span>Subnet</span><Input v-model="networkDraft.subnet" placeholder="172.28.0.0/16" /></label><label class="docker-field"><span>Gateway</span><Input v-model="networkDraft.gateway" placeholder="172.28.0.1" /></label><label class="flex items-center gap-2 text-sm"><input v-model="networkDraft.internal" type="checkbox" />Internal</label><label class="flex items-center gap-2 text-sm"><input v-model="networkDraft.attachable" type="checkbox" />Attachable</label></div><DialogFooter><Button variant="outline" @click="createNetworkOpen = false">{{ t("common.cancel") }}</Button><Button :disabled="submitting || !networkDraft.name.trim()" @click="createNetwork">{{ t("docker.create") }}</Button></DialogFooter></DialogContent>
     </Dialog>
+    <DangerConfirmDialog v-model:open="dangerOpen" :message="dangerMessage" :confirm-label="t('common.confirm')" @confirm="settleConfirmation(true)" />
   </div>
 </template>
 
 <style scoped>
-.docker-header { background: var(--docker-accent-soft, color-mix(in srgb, var(--muted) 24%, transparent)); }
-.docker-main-tab { height: 2.5rem; border-bottom: 2px solid transparent; padding: 0 0.9rem; font-size: 0.875rem; color: var(--muted-foreground); }
+.docker-header { background: linear-gradient(90deg, var(--docker-accent-soft, color-mix(in srgb, var(--muted) 24%, transparent)), var(--docker-accent-faint, transparent)); box-shadow: inset 0 -1px 0 color-mix(in srgb, var(--docker-accent, var(--border)) 35%, var(--border)); }
+.docker-main-tab { height: 2rem; border-bottom: 2px solid transparent; padding: 0 0.7rem; font-size: 0.75rem; color: var(--muted-foreground); }
 .docker-main-tab:hover { color: var(--foreground); }
 .docker-main-tab.active { border-color: var(--docker-accent, var(--primary)); color: var(--foreground); font-weight: 600; }
 .docker-detail-tab { border-bottom: 2px solid transparent; padding: 0.65rem 1rem; font-size: 0.8rem; color: var(--muted-foreground); }
@@ -922,6 +1165,19 @@ onUnmounted(() => {
 .docker-table th { position: sticky; top: 0; z-index: 5; border-bottom: 1px solid var(--border); background: var(--background); padding: 0.65rem 1rem; font-size: 0.75rem; font-weight: 500; color: var(--muted-foreground); }
 .docker-table td { border-bottom: 1px solid var(--border); padding: 0.55rem 1rem; vertical-align: middle; }
 .docker-table tbody tr:hover { background: color-mix(in srgb, var(--muted) 42%, transparent); }
+.docker-sort { display: inline-flex; align-items: center; gap: 0.3rem; white-space: nowrap; }
+.docker-sort svg { width: 0.75rem; height: 0.75rem; opacity: 0.55; }
+.docker-copy-cell { display: flex; min-width: 0; align-items: center; gap: 0.4rem; }
+.docker-copy-button { display: inline-flex; width: 1.25rem; height: 1.25rem; flex: 0 0 auto; align-items: center; justify-content: center; border-radius: 0.25rem; opacity: 0; color: var(--muted-foreground); transition: opacity 120ms ease, background-color 120ms ease; }
+.docker-copy-cell:hover .docker-copy-button, .docker-copy-button:focus-visible { opacity: 1; }
+.docker-copy-button:hover { background: var(--muted); color: var(--foreground); }
+.docker-copy-button svg { width: 0.75rem; height: 0.75rem; }
+.docker-status { display: inline-flex; border-radius: 999px; padding: 0.15rem 0.5rem; font-size: 0.7rem; font-weight: 600; }
+.docker-status.running { background: color-mix(in srgb, #10b981 16%, transparent); color: #059669; }
+.docker-status.paused { background: color-mix(in srgb, #f59e0b 16%, transparent); color: #d97706; }
+.docker-status.stopped { background: color-mix(in srgb, var(--muted-foreground) 14%, transparent); color: var(--muted-foreground); }
+.docker-image-name-column { width: 22rem; max-width: 50vw; }
+.docker-resizable-column { width: 22rem; min-width: 12rem; max-width: 50vw; overflow: hidden; resize: horizontal; }
 .docker-card { display: flex; min-width: 0; flex-direction: column; gap: 0.2rem; border: 1px solid var(--border); border-radius: var(--radius-md); background: color-mix(in srgb, var(--muted) 20%, transparent); padding: 0.8rem; }
 .docker-card span, .docker-card small { font-size: 0.72rem; color: var(--muted-foreground); }
 .docker-card strong { overflow-wrap: anywhere; font-size: 0.875rem; }

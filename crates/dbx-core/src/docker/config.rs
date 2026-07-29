@@ -76,19 +76,6 @@ impl DockerAdminConfig {
                 if connection.port == 0 {
                     return Err("Docker port is required".to_string());
                 }
-                if self.protocol == DockerProtocol::Http
-                    && !self.allow_insecure_remote_http
-                    && !is_loopback_host(host)
-                    && !connection
-                        .effective_transport_layers()
-                        .iter()
-                        .any(|layer| matches!(layer, TransportLayerConfig::Ssh(_)))
-                {
-                    return Err(
-                        "Remote Docker HTTP is disabled because it grants unauthenticated root-equivalent access. Use HTTPS, an SSH tunnel, or explicitly allow insecure remote HTTP."
-                            .to_string(),
-                    );
-                }
             }
             DockerProtocol::Unix => {
                 if !connection.effective_transport_layers().is_empty() {
@@ -136,11 +123,6 @@ pub(crate) fn parse_api_version(value: &str) -> Result<(u16, u16), String> {
     Ok(parsed)
 }
 
-fn is_loopback_host(host: &str) -> bool {
-    matches!(host.trim_matches(['[', ']']), "localhost" | "127.0.0.1" | "::1")
-        || host.parse::<std::net::IpAddr>().is_ok_and(|address| address.is_loopback())
-}
-
 #[cfg(test)]
 mod tests {
     use super::{parse_api_version, DockerAdminConfig};
@@ -167,12 +149,12 @@ mod tests {
     }
 
     #[test]
-    fn rejects_remote_plain_http_by_default() {
+    fn allows_remote_plain_http_with_warning_handled_by_ui() {
         let mut connection = docker_connection();
         connection.host = "docker.example.com".to_string();
         connection.port = 2375;
         connection.external_config = Some(serde_json::json!({"protocol": "http"}));
-        assert!(DockerAdminConfig::from_connection(&connection).is_err());
+        assert!(DockerAdminConfig::from_connection(&connection).is_ok());
     }
 
     #[test]

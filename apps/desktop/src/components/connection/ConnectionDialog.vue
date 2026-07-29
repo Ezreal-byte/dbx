@@ -5499,13 +5499,12 @@ function openExternalUrl(url: string) {
                       <Input v-model="form.client_key_path" class="col-span-3" placeholder="/certs/key.pem" />
                     </div>
                   </template>
-                  <label v-if="dockerProtocol === 'http'" class="grid grid-cols-4 items-start gap-4">
+                  <div v-if="dockerProtocol === 'http'" class="grid grid-cols-4 items-start gap-4">
                     <span />
-                    <span class="col-span-3 flex items-start gap-2 text-xs text-muted-foreground">
-                      <input v-model="dockerAllowInsecureRemoteHttp" type="checkbox" class="mt-0.5" />
-                      Allow insecure non-local HTTP. Docker API access is root-equivalent and must only be enabled on a trusted network.
-                    </span>
-                  </label>
+                    <p class="col-span-3 m-0 rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-300">
+                      {{ t("docker.remoteHttpWarning") }}
+                    </p>
+                  </div>
                 </template>
 
                 <!-- Nacos: profile-aware endpoint, namespace and auth -->
