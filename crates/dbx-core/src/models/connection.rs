@@ -521,6 +521,7 @@ pub enum DatabaseType {
     #[serde(rename = "zookeeper")]
     ZooKeeper,
     Nacos,
+    Ssh,
     #[serde(rename = "iris")]
     Iris,
     #[serde(rename = "turso")]
@@ -1079,6 +1080,7 @@ impl ConnectionConfig {
             DatabaseType::Jdbc => "jdbc:<redacted>".to_string(),
             DatabaseType::MessageQueue => self.message_queue_admin_url(),
             DatabaseType::Nacos => self.nacos_admin_url(),
+            DatabaseType::Ssh => format!("ssh://{host}:{port}"),
         }
     }
 
@@ -1308,6 +1310,13 @@ impl ConnectionConfig {
             }
             DatabaseType::MessageQueue => self.message_queue_admin_url(),
             DatabaseType::Nacos => self.nacos_admin_url(),
+            DatabaseType::Ssh => {
+                if self.username.is_empty() {
+                    format!("ssh://{host}:{port}")
+                } else {
+                    format!("ssh://{username}@{host}:{port}")
+                }
+            }
         }
     }
 

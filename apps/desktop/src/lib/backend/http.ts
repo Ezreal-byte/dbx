@@ -42,6 +42,10 @@ import type {
   SavedSqlLibrary,
   SshConfigHostEntry,
   TunnelProfile,
+  SshSessionInfo,
+  SftpEntry,
+  SftpTransferTask,
+  SftpPreview,
 } from "@/types/database";
 import { normalizeRustMongoCommand, type MongoCommand } from "@/lib/mongo/mongoShellCommand";
 import type { CollectionInfo } from "@/types/database";
@@ -2139,6 +2143,100 @@ export async function redisPubSubPublish(connectionId: string, db: number, chann
 
 export async function redisPubSubConnect(connectionId: string): Promise<WebSocket> {
   return new WebSocket(apiWebSocketUrl(`/api/redis/pubsub/ws?connectionId=${encodeURIComponent(connectionId)}`));
+}
+
+// --- SSH workbench ---
+
+export async function sshTestConnection(config: ConnectionConfig): Promise<{ message: string }> {
+  return post("/api/ssh/test-connection", config);
+}
+
+export async function sshCreateSession(config: ConnectionConfig, cols = 120, rows = 32): Promise<SshSessionInfo> {
+  return post("/api/ssh/sessions", { config, cols, rows });
+}
+
+export async function sshConnectTerminal(sessionId: string, afterSequence = 0): Promise<WebSocket> {
+  const query = `sessionId=${encodeURIComponent(sessionId)}&afterSequence=${afterSequence}`;
+  return new WebSocket(apiWebSocketUrl(`/api/ssh/terminal/ws?${query}`));
+}
+
+export async function sshCloseSession(sessionId: string): Promise<void> {
+  await post("/api/ssh/sessions/close", { sessionId });
+}
+
+export async function sftpHome(sessionId: string): Promise<string> {
+  return post("/api/ssh/sftp/home", { sessionId });
+}
+
+export async function sftpList(sessionId: string, path: string): Promise<SftpEntry[]> {
+  return post("/api/ssh/sftp/list", { sessionId, path });
+}
+
+export async function sftpMkdir(sessionId: string, path: string): Promise<void> {
+  await post("/api/ssh/sftp/mkdir", { sessionId, path });
+}
+
+export async function sftpRename(sessionId: string, from: string, to: string): Promise<void> {
+  await post("/api/ssh/sftp/rename", { sessionId, from, to });
+}
+
+export async function sftpDelete(sessionId: string, path: string, recursive = false): Promise<void> {
+  await post("/api/ssh/sftp/delete", { sessionId, path, recursive });
+}
+
+export async function sftpPreview(sessionId: string, path: string, maxBytes = 2 * 1024 * 1024): Promise<SftpPreview> {
+  return post("/api/ssh/sftp/preview", { sessionId, path, maxBytes });
+}
+
+export async function pickSftpUploadFile(): Promise<string | File | null> {
+  return new Promise((resolve) => {
+    const input = document.createElement("input");
+    input.type = "file";
+    input.addEventListener("change", () => resolve(input.files?.[0] ?? null), { once: true });
+    input.addEventListener("cancel", () => resolve(null), { once: true });
+    input.click();
+  });
+}
+
+export async function sftpUpload(sessionId: string, source: string | File, remotePath: string): Promise<SftpTransferTask> {
+  if (!(source instanceof File)) throw new Error("Web SFTP upload requires a browser File");
+  const form = new FormData();
+  form.append("sessionId", sessionId);
+  form.append("remotePath", remotePath);
+  form.append("file", source);
+  const response = await fetch(apiUrl("/api/ssh/sftp/upload"), { method: "POST", body: form });
+  if (!response.ok) throw new Error(await response.text());
+  return (await response.json()) as SftpTransferTask;
+}
+
+export async function sftpDownload(sessionId: string, remotePath: string, defaultName: string): Promise<SftpTransferTask | null> {
+  const task = await post<SftpTransferTask>("/api/ssh/sftp/download/task", { sessionId, path: remotePath });
+  const params = new URLSearchParams({ taskId: task.taskId });
+  const anchor = document.createElement("a");
+  anchor.href = apiUrl(`/api/ssh/sftp/download?${params}`);
+  anchor.download = defaultName;
+  anchor.style.display = "none";
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  return task;
+}
+
+export async function listenSftpTransferProgress(handler: (task: SftpTransferTask) => void): Promise<() => void> {
+  const eventSource = new EventSource(apiUrl("/api/ssh/sftp/transfers/events"));
+  const onTransfer = (event: MessageEvent<string>) => {
+    try {
+      handler(JSON.parse(event.data) as SftpTransferTask);
+    } catch {
+      // Ignore malformed progress events and keep the stream alive.
+    }
+  };
+  eventSource.addEventListener("transfer", onTransfer as EventListener);
+  return () => eventSource.close();
+}
+
+export async function cancelSftpTransfer(taskId: string): Promise<void> {
+  await post("/api/ssh/sftp/transfer/cancel", { taskId });
 }
 
 export async function redisSlowlogGet(connectionId: string, count: number, nodeHost?: string, nodePort?: number): Promise<RedisSlowlogEntry[]> {

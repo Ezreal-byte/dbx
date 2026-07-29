@@ -563,6 +563,7 @@ async fn save_connection_configs(state: &AppState, configs: &[ConnectionConfig])
     remove_connection_pools_for_connection_ids(state, &sync.connection_pool_ids_to_drop).await;
     drop_nacos_adapters_for_connection_ids(state, &sync.nacos_adapter_ids_to_drop).await;
     drop_mq_adapters_for_connection_ids(state, &sync.mq_adapter_ids_to_drop).await;
+    close_ssh_sessions_for_connection_ids(state, &sync.ssh_session_connection_ids_to_drop).await;
     Ok(())
 }
 
@@ -570,6 +571,7 @@ struct ConnectionConfigSync {
     nacos_adapter_ids_to_drop: Vec<String>,
     mq_adapter_ids_to_drop: Vec<String>,
     connection_pool_ids_to_drop: Vec<String>,
+    ssh_session_connection_ids_to_drop: Vec<String>,
 }
 
 async fn sync_connection_configs(state: &AppState, configs: &[ConnectionConfig]) -> ConnectionConfigSync {
@@ -577,6 +579,7 @@ async fn sync_connection_configs(state: &AppState, configs: &[ConnectionConfig])
     let mut nacos_adapter_ids_to_drop = HashSet::new();
     let mut mq_adapter_ids_to_drop = HashSet::new();
     let mut connection_pool_ids_to_drop = HashSet::new();
+    let mut ssh_session_connection_ids_to_drop = HashSet::new();
     let mut runtime_configs = state.configs.write().await;
     runtime_configs.retain(|id, existing| {
         if saved_ids.contains(id.as_str()) || is_transient_runtime_config_id(id) {
@@ -588,6 +591,9 @@ async fn sync_connection_configs(state: &AppState, configs: &[ConnectionConfig])
             }
             if existing.db_type == DatabaseType::MessageQueue {
                 mq_adapter_ids_to_drop.insert(id.clone());
+            }
+            if existing.db_type == DatabaseType::Ssh {
+                ssh_session_connection_ids_to_drop.insert(id.clone());
             }
             false
         }
@@ -608,6 +614,9 @@ async fn sync_connection_configs(state: &AppState, configs: &[ConnectionConfig])
             }
             if &previous != config {
                 connection_pool_ids_to_drop.insert(config.id.clone());
+                if previous.db_type == DatabaseType::Ssh || config.db_type == DatabaseType::Ssh {
+                    ssh_session_connection_ids_to_drop.insert(config.id.clone());
+                }
             }
         }
     }
@@ -615,6 +624,13 @@ async fn sync_connection_configs(state: &AppState, configs: &[ConnectionConfig])
         nacos_adapter_ids_to_drop: nacos_adapter_ids_to_drop.into_iter().collect(),
         mq_adapter_ids_to_drop: mq_adapter_ids_to_drop.into_iter().collect(),
         connection_pool_ids_to_drop: connection_pool_ids_to_drop.into_iter().collect(),
+        ssh_session_connection_ids_to_drop: ssh_session_connection_ids_to_drop.into_iter().collect(),
+    }
+}
+
+async fn close_ssh_sessions_for_connection_ids(state: &AppState, connection_ids: &[String]) {
+    for connection_id in connection_ids {
+        state.ssh_registry.close_connection_sessions(connection_id).await;
     }
 }
 

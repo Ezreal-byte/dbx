@@ -43,6 +43,8 @@ export interface SavedOpenTab {
   mqInitialTab?: QueryTab["mqInitialTab"];
   nacosNamespace?: string;
   nacosNamespaceName?: string;
+  sshSftpPath?: string;
+  sshFollowDirectory?: boolean;
   structureTableName?: string;
   objectBrowser?: QueryTab["objectBrowser"];
   objectSource?: QueryTab["objectSource"];
@@ -111,6 +113,8 @@ export function serializeOpenTabs(tabs: QueryTab[]): SavedOpenTab[] {
     ...(tab.mqInitialTab !== undefined ? { mqInitialTab: tab.mqInitialTab } : {}),
     ...(tab.nacosNamespace !== undefined ? { nacosNamespace: tab.nacosNamespace } : {}),
     ...(tab.nacosNamespaceName !== undefined ? { nacosNamespaceName: tab.nacosNamespaceName } : {}),
+    ...(tab.mode === "ssh" && tab.sshSftpPath !== undefined ? { sshSftpPath: tab.sshSftpPath } : {}),
+    ...(tab.mode === "ssh" && tab.sshFollowDirectory ? { sshFollowDirectory: true } : {}),
     ...(tab.structureTableName !== undefined ? { structureTableName: tab.structureTableName } : {}),
     objectBrowser: tab.objectBrowser,
     objectSource: tab.objectSource,
@@ -181,6 +185,7 @@ function restoreOpenTabsArray(parsed: unknown, rawActiveTabId: string | null, op
         resultRuns,
         activeResultRunId: resultRuns?.some((run) => run.id === tab.activeResultRunId) ? tab.activeResultRunId : resultRuns?.[0]?.id,
         resultAutoSave: mode === "query" && tab.resultAutoSave ? true : undefined,
+        sshRestored: mode === "ssh" ? true : undefined,
       };
     });
     const activeTabId = rawActiveTabId || null;

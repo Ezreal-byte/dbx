@@ -1554,6 +1554,34 @@ export const useQueryStore = defineStore("query", () => {
     return id;
   }
 
+  function openSshWorkbench(connectionId: string, options: { forceNew?: boolean } = {}) {
+    const existing = options.forceNew ? undefined : tabs.value.find((tab) => tab.mode === "ssh" && tab.connectionId === connectionId);
+    if (existing) {
+      switchTab(existing.id);
+      return existing.id;
+    }
+
+    const conn = useConnectionStore().getConfig(connectionId);
+    const baseTitle = conn?.name || "SSH";
+    const siblingCount = tabs.value.filter((tab) => tab.mode === "ssh" && tab.connectionId === connectionId).length;
+    const id = uuid();
+    const tab: QueryTab = {
+      id,
+      title: siblingCount > 0 ? `${baseTitle} (${siblingCount + 1})` : baseTitle,
+      connectionId,
+      database: "",
+      sql: "",
+      isExecuting: false,
+      isCancelling: false,
+      isExplaining: false,
+      mode: "ssh",
+      sshFollowDirectory: false,
+    };
+    tabs.value.push(tab);
+    activeTabId.value = id;
+    return id;
+  }
+
   function clearNacosNavigationTarget(connectionId: string, namespace: string, requestId?: number) {
     const tab = tabs.value.find((candidate) => candidate.mode === "nacos" && candidate.connectionId === connectionId && (candidate.nacosNamespace || "") === namespace);
     if (!tab || (requestId !== undefined && tab.nacosTargetRequestId !== requestId)) return;
@@ -1753,6 +1781,7 @@ export const useQueryStore = defineStore("query", () => {
     if (tabs.value[idx].txnSessionId) void rollbackTransaction(id);
     if (tabs.value[idx].isExecuting) void cancelTabExecution(id);
     if (tabs.value[idx].isExplaining) void cancelTabExplain(id);
+    if (tabs.value[idx].sshSessionId) void api.sshCloseSession(tabs.value[idx].sshSessionId);
     void closeResultSession(tabs.value[idx]);
     void closeClientConnectionSession(tabs.value[idx]);
     clearResultRunSnapshots(tabs.value[idx]);
@@ -4917,6 +4946,7 @@ export const useQueryStore = defineStore("query", () => {
     openDamengJobAdmin,
     openMqAdmin,
     openNacosAdmin,
+    openSshWorkbench,
     clearNacosNavigationTarget,
     openTableStructure,
     linkSavedSql,

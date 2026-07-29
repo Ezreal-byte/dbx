@@ -30,6 +30,7 @@ pub mod schema_diff;
 pub mod sql_file;
 pub mod ssh_config;
 pub mod ssh_prompt;
+pub mod ssh_workbench;
 pub mod tab_runtime_cache;
 pub mod table_export;
 pub mod table_import;

@@ -22,6 +22,7 @@ pub const MQ_TOKEN_SIGNING_KEY: &str = "mq.token_signing.key";
 pub const NACOS_AUTH_SECRET_PREFIX: &str = "nacos.auth.";
 pub const NACOS_AUTH_PASSWORD_KEY: &str = "nacos.auth.password";
 pub const NACOS_RNACOS_CONSOLE_PASSWORD_KEY: &str = "nacos.auth.rnacos_console_password";
+pub const SSH_WORKBENCH_KEY_PASSPHRASE_KEY: &str = "ssh.workbench.key_passphrase";
 
 pub trait ConnectionSecretStore {
     fn set_secret(&self, connection_id: &str, key: &str, secret: &str) -> Result<(), String>;
@@ -109,6 +110,7 @@ pub fn save_connections_to_file(
         persist_optional_secret(store, &config.id, INIT_SCRIPT_KEY, config.init_script.as_deref())?;
         persist_mq_auth_secrets(store, config)?;
         persist_mq_token_signing_secret(store, config)?;
+        persist_ssh_workbench_secret(store, config)?;
 
         // New configs persist transport-layer secrets only. Remove legacy transport secret slots after the
         // migrated layer values have been written so old configs do not keep two sources of truth.
@@ -177,6 +179,7 @@ pub fn load_connections_from_file(
         }
         hydrate_mq_auth_secrets(store, config, &mut needs_rewrite)?;
         hydrate_mq_token_signing_secret(store, config, &mut needs_rewrite)?;
+        hydrate_ssh_workbench_secret(store, config, &mut needs_rewrite)?;
     }
 
     if needs_rewrite {
@@ -549,6 +552,30 @@ fn scrub_mq_token_signing_secret(config: &mut ConnectionConfig) {
     scrub_json_secret(signing, "key");
 }
 
+fn persist_ssh_workbench_secret(store: &dyn ConnectionSecretStore, config: &ConnectionConfig) -> Result<(), String> {
+    let Some(workbench) = ssh_workbench_object(config.external_config.as_ref()) else {
+        return store.delete_secret(&config.id, SSH_WORKBENCH_KEY_PASSPHRASE_KEY);
+    };
+    persist_json_secret_if_present(store, &config.id, SSH_WORKBENCH_KEY_PASSPHRASE_KEY, workbench, "keyPassphrase")
+}
+
+fn hydrate_ssh_workbench_secret(
+    store: &dyn ConnectionSecretStore,
+    config: &mut ConnectionConfig,
+    needs_rewrite: &mut bool,
+) -> Result<(), String> {
+    let Some(workbench) = ssh_workbench_object_mut(config.external_config.as_mut()) else {
+        return Ok(());
+    };
+    hydrate_json_secret(store, &config.id, SSH_WORKBENCH_KEY_PASSPHRASE_KEY, workbench, "keyPassphrase", needs_rewrite)
+}
+
+fn scrub_ssh_workbench_secret(config: &mut ConnectionConfig) {
+    if let Some(workbench) = ssh_workbench_object_mut(config.external_config.as_mut()) {
+        scrub_json_secret(workbench, "keyPassphrase");
+    }
+}
+
 fn scrub_json_secret(auth: &mut serde_json::Map<String, serde_json::Value>, field: &str) {
     if auth.contains_key(field) {
         auth.insert(field.to_string(), serde_json::Value::String(String::new()));
@@ -577,6 +604,16 @@ fn mq_token_signing_object_mut(
     value: Option<&mut serde_json::Value>,
 ) -> Option<&mut serde_json::Map<String, serde_json::Value>> {
     value?.get_mut("tokenSigning")?.as_object_mut()
+}
+
+fn ssh_workbench_object(value: Option<&serde_json::Value>) -> Option<&serde_json::Map<String, serde_json::Value>> {
+    value?.get("sshWorkbench")?.as_object()
+}
+
+fn ssh_workbench_object_mut(
+    value: Option<&mut serde_json::Value>,
+) -> Option<&mut serde_json::Map<String, serde_json::Value>> {
+    value?.get_mut("sshWorkbench")?.as_object_mut()
 }
 
 fn ssh_tunnel_secret_segment(index: usize, hop: &crate::models::connection::SshTunnelConfig) -> String {
@@ -656,6 +693,7 @@ fn sanitize_connections(configs: &[ConnectionConfig]) -> Vec<ConnectionConfig> {
             config.init_script = None;
             scrub_mq_auth_secrets(&mut config);
             scrub_mq_token_signing_secret(&mut config);
+            scrub_ssh_workbench_secret(&mut config);
             config
         })
         .collect()
@@ -670,7 +708,7 @@ mod tests {
     use super::{
         load_connections_from_file, save_connections_to_file, ConnectionSecretStore, CONNECTION_STRING_KEY,
         INIT_SCRIPT_KEY, MAIN_PASSWORD_KEY, MQ_AUTH_PASSWORD_KEY, MQ_AUTH_TOKEN_KEY, MQ_TOKEN_SIGNING_KEY,
-        REDIS_SENTINEL_PASSWORD_KEY, SSH_PASSWORD_KEY,
+        REDIS_SENTINEL_PASSWORD_KEY, SSH_PASSWORD_KEY, SSH_WORKBENCH_KEY_PASSPHRASE_KEY,
     };
     use crate::models::connection::{
         ConnectionConfig, DatabaseType, HttpTunnelConfig, SshTunnelConfig, TransportLayerConfig,
@@ -851,6 +889,50 @@ mod tests {
             _ => panic!("expected ssh layer"),
         }
         assert_eq!(persisted[0].redis_sentinel_password, "");
+    }
+
+    #[test]
+    fn save_connections_moves_ssh_workbench_passphrase_to_secret_store() {
+        let path = temp_connections_file("ssh-workbench-passphrase");
+        let store = MemorySecretStore::default();
+        let mut config = connection("ssh-main", "", "");
+        config.db_type = DatabaseType::Ssh;
+        config.port = 22;
+        config.external_config = Some(serde_json::json!({
+            "sshWorkbench": {
+                "authMethod": "key",
+                "keyPath": "~/.ssh/id_ed25519",
+                "keyPassphrase": "workbench-secret"
+            }
+        }));
+
+        save_connections_to_file(&path, &[config], &store).unwrap();
+
+        assert_eq!(
+            store.get_existing("ssh-main", SSH_WORKBENCH_KEY_PASSPHRASE_KEY).as_deref(),
+            Some("workbench-secret")
+        );
+        let persisted = read_configs(&path);
+        assert_eq!(
+            persisted[0]
+                .external_config
+                .as_ref()
+                .and_then(|value| value.get("sshWorkbench"))
+                .and_then(|value| value.get("keyPassphrase"))
+                .and_then(serde_json::Value::as_str),
+            Some("")
+        );
+
+        let loaded = load_connections_from_file(&path, &store).unwrap();
+        assert_eq!(
+            loaded[0]
+                .external_config
+                .as_ref()
+                .and_then(|value| value.get("sshWorkbench"))
+                .and_then(|value| value.get("keyPassphrase"))
+                .and_then(serde_json::Value::as_str),
+            Some("workbench-secret")
+        );
     }
 
     #[test]

@@ -1264,6 +1264,10 @@ async function newQuery() {
   connectionStore.activeConnectionId = target.connectionId;
   const connectionTarget = quickConnectionOpenTarget(conn);
   if (connectionTarget.kind !== "query") {
+    if (connectionTarget.kind === "ssh-workbench") {
+      queryStore.openSshWorkbench(target.connectionId);
+      return;
+    }
     try {
       await connectionStore.ensureConnected(target.connectionId);
       if (connectionTarget.kind === "mq-admin") {
@@ -1334,6 +1338,10 @@ async function openConnectionQuery(connectionId: string) {
         5000,
       );
     }
+    return;
+  }
+  if (initialTarget.kind === "ssh-workbench") {
+    queryStore.openSshWorkbench(connectionId);
     return;
   }
   if (initialTarget.kind === "etcd" || initialTarget.kind === "zookeeper") {

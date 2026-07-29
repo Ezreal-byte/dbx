@@ -14,7 +14,22 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Switch } from "@/components/ui/switch";
-import type { ConnectionConfig, ConnectionTestResult, DatabaseConnectionInfo, DatabaseType, HttpTunnelConfig, IdentifierCase, JdbcDriverInfo, JdbcLocalBundleInfo, JdbcMavenBundleInfo, ProxyTunnelConfig, SshConfigHostEntry, SshTunnelConfig, TransportLayerConfig } from "@/types/database";
+import type {
+  ConnectionConfig,
+  ConnectionTestResult,
+  DatabaseConnectionInfo,
+  DatabaseType,
+  HttpTunnelConfig,
+  IdentifierCase,
+  JdbcDriverInfo,
+  JdbcLocalBundleInfo,
+  JdbcMavenBundleInfo,
+  ProxyTunnelConfig,
+  SshConfigHostEntry,
+  SshTunnelConfig,
+  SshWorkbenchConfig,
+  TransportLayerConfig,
+} from "@/types/database";
 import type { InfluxDbExternalConfig, InfluxDbVersion } from "@/types/influxdb";
 import type { MqAdminConfig, MqAuth, MqSystemKind } from "@/types/mq";
 import type { NacosAdminConfig, NacosAuthConfig, NacosImplementation, NacosMetricsMode, NacosRNacosConsoleAuth, NacosVersionMode } from "@/types/nacos";
@@ -624,6 +639,11 @@ const nacosContextPathCustomized = ref(false);
 const nacosRNacosConsoleAddr = ref("");
 const nacosHistoryEnabled = ref(false);
 const nacosConsoleAuthKind = ref<NacosRNacosConsoleAuth["kind"]>("inherit");
+const sshWorkbenchAuthMethod = ref<SshWorkbenchConfig["authMethod"]>("password");
+const sshWorkbenchKeyPath = ref("");
+const sshWorkbenchKeyPassphrase = ref("");
+const sshWorkbenchUseAgent = ref(false);
+const sshWorkbenchAgentSocket = ref("");
 const nacosConsoleUsername = ref("");
 const nacosConsolePassword = ref("");
 const nacosAuthKind = ref<NacosAuthKind>("none");
@@ -942,6 +962,7 @@ const driverProfiles: Record<
   rocketmq: { type: "mq", port: 9876, user: "", label: "Apache RocketMQ", icon: "rocketmq", host: "127.0.0.1" },
   rabbitmq: { type: "mq", port: 5672, user: "", label: "RabbitMQ", icon: "rabbitmq", host: "127.0.0.1" },
   nacos: { type: "nacos", port: 8848, user: "nacos", label: "Nacos", icon: "nacos", host: "127.0.0.1" },
+  ssh: { type: "ssh", port: 22, user: "root", label: "SSH", icon: "ssh", host: "127.0.0.1" },
   iris: { type: "iris", port: 1972, user: "_SYSTEM", label: "IRIS", icon: "iris" },
   influxdb: { type: "influxdb", port: 8086, user: "", label: "InfluxDB", icon: "InfluxDB" },
   custom_mysql: {
@@ -1155,6 +1176,37 @@ function hydrateNacosFields(value: unknown) {
     return;
   }
   resetNacosFields(value as Partial<NacosAdminConfig>);
+}
+
+function resetSshWorkbenchFields(config?: Partial<SshWorkbenchConfig>) {
+  sshWorkbenchAuthMethod.value = config?.authMethod || "password";
+  sshWorkbenchKeyPath.value = config?.keyPath || "";
+  sshWorkbenchKeyPassphrase.value = config?.keyPassphrase || "";
+  sshWorkbenchUseAgent.value = config?.useSshAgent ?? config?.authMethod === "agent";
+  sshWorkbenchAgentSocket.value = config?.sshAgentSockPath || "";
+}
+
+function hydrateSshWorkbenchFields(value: unknown) {
+  if (!value || typeof value !== "object") {
+    resetSshWorkbenchFields();
+    return;
+  }
+  const root = value as Record<string, unknown>;
+  const config = root.sshWorkbench;
+  resetSshWorkbenchFields(config && typeof config === "object" ? (config as Partial<SshWorkbenchConfig>) : undefined);
+}
+
+function buildSshWorkbenchConfig(): SshWorkbenchConfig {
+  return {
+    authMethod: sshWorkbenchAuthMethod.value,
+    keyPath: sshWorkbenchKeyPath.value.trim() || undefined,
+    keyPassphrase: sshWorkbenchKeyPassphrase.value || undefined,
+    useSshAgent: sshWorkbenchUseAgent.value || sshWorkbenchAuthMethod.value === "agent",
+    sshAgentSockPath: sshWorkbenchAgentSocket.value.trim() || undefined,
+    terminalType: "xterm-256color",
+    cols: 120,
+    rows: 32,
+  };
 }
 
 const influxDbVersion = ref<InfluxDbVersion>("1");
@@ -1858,6 +1910,10 @@ function applyProfile(val: string, preserveConnectionFields = false) {
     form.value.url_params = profile.urlParams || "";
     form.value.agent_java_options = [];
     damengJvmOptions.value = "";
+    if (profile.type === "ssh") {
+      form.value.connect_timeout_secs = 15;
+      form.value.keepalive_interval_secs = 30;
+    }
     if (profile.host) {
       form.value.host = profile.host;
     }
@@ -2015,6 +2071,11 @@ watch(
       } else {
         resetNacosFields();
       }
+      if (config.db_type === "ssh") {
+        hydrateSshWorkbenchFields(config.external_config);
+      } else {
+        resetSshWorkbenchFields();
+      }
       if (config.db_type === "influxdb") {
         hydrateInfluxDbFields(config.external_config);
       } else {
@@ -2057,6 +2118,7 @@ watch(
       customDriverName.value = "";
       resetMqFields();
       resetNacosFields();
+      resetSshWorkbenchFields();
       resetInfluxDbFields();
       resetElasticsearchProxyFields();
       resetHiveKerberosFields();
@@ -2258,6 +2320,7 @@ const iconTypeMap: Record<string, string> = {
   rocketmq: "rocketmq",
   rabbitmq: "rabbitmq",
   nacos: "nacos",
+  ssh: "ssh",
   dm: "dm",
   h2: "h2",
   snowflake: "snowflake",
@@ -2357,6 +2420,7 @@ const dbOptions: DbOption[] = [
   { value: "rocketmq", label: "Apache RocketMQ" },
   { value: "rabbitmq", label: "RabbitMQ" },
   { value: "nacos", label: "Nacos" },
+  { value: "ssh", label: "SSH" },
   { value: "influxdb", label: "InfluxDB" },
   { value: "iris", label: "IRIS" },
   { value: "jdbcx", label: "JDBCX" },
@@ -2414,7 +2478,7 @@ const dbCategoryDefinitions: Array<{
   {
     key: "registry_config",
     titleKey: "connection.databaseCategoryRegistryConfig",
-    optionValues: ["etcd", "zookeeper", "nacos"],
+    optionValues: ["etcd", "zookeeper", "nacos", "ssh"],
   },
 ];
 
@@ -2893,6 +2957,13 @@ async function testConnection() {
   const submittedSourceName = form.value.name;
   try {
     config = connectionConfigForSubmit(editingId.value || draftTestConnectionId.value);
+    if (config.db_type === "ssh") {
+      const result = await api.sshTestConnection(config);
+      if (runId !== testRunId) return;
+      testResult.value = { ok: true, message: result.message };
+      clearEditedConnectionErrorAfterSuccessfulTest();
+      return;
+    }
     await ensureRequiredAgentDriverInstalled(config);
     await ensureRequiredJdbcxDriverInstalled(config);
     const result = await testConnectionWithTimeout(config, runId);
@@ -3208,6 +3279,14 @@ function connectionConfigForSubmit(id: string, generatedName = ""): ConnectionCo
     config.database = nacosConfig.namespace || undefined;
     config.connection_string = undefined;
     config.url_params = "";
+  } else if (config.db_type === "ssh") {
+    config.external_config = { sshWorkbench: buildSshWorkbenchConfig() };
+    config.database = undefined;
+    config.connection_string = undefined;
+    config.url_params = "";
+    config.ssl = false;
+    config.connect_timeout_secs = config.connect_timeout_secs || 15;
+    config.keepalive_interval_secs = config.keepalive_interval_secs || 30;
   } else if (config.db_type === "influxdb") {
     config.external_config = buildInfluxDbExternalConfig();
     config.connection_string = undefined;
@@ -4306,6 +4385,8 @@ async function browseSshKeyPath(target?: SshTunnelConfig | null) {
     if (selected && typeof selected === "string") {
       if (target) {
         target.key_path = selected;
+      } else if (form.value.db_type === "ssh") {
+        sshWorkbenchKeyPath.value = selected;
       }
     }
   }
@@ -5502,6 +5583,62 @@ function openExternalUrl(url: string) {
                 </template>
 
                 <!-- Redis: host, port, user, password, ssl -->
+                <template v-else-if="form.db_type === 'ssh'">
+                  <div class="grid grid-cols-4 items-center gap-4">
+                    <Label :class="connectionLabelClass">{{ t("connection.host") }}</Label>
+                    <Input v-model="form.host" class="col-span-2" placeholder="127.0.0.1" />
+                    <Input v-model.number="form.port" type="number" class="col-span-1" />
+                  </div>
+                  <div class="grid grid-cols-4 items-center gap-4">
+                    <Label :class="connectionLabelClass">{{ t("connection.user") }}</Label>
+                    <Input v-model="form.username" class="col-span-3" placeholder="root" />
+                  </div>
+                  <div class="grid grid-cols-4 items-center gap-4">
+                    <Label :class="connectionLabelClass">Authentication</Label>
+                    <Select v-model="sshWorkbenchAuthMethod">
+                      <SelectTrigger class="col-span-3 h-9">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="password">Password</SelectItem>
+                        <SelectItem value="key">Private key</SelectItem>
+                        <SelectItem value="key+password">Private key, then password</SelectItem>
+                        <SelectItem value="agent">SSH Agent</SelectItem>
+                        <SelectItem value="none">None</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div v-if="sshWorkbenchAuthMethod === 'password' || sshWorkbenchAuthMethod === 'key+password'" class="grid grid-cols-4 items-center gap-4">
+                    <Label :class="connectionLabelClass">{{ t("connection.password") }}</Label>
+                    <PasswordInput v-model="form.password" class="col-span-3" />
+                  </div>
+                  <template v-if="sshWorkbenchAuthMethod === 'key' || sshWorkbenchAuthMethod === 'key+password'">
+                    <div class="grid grid-cols-4 items-center gap-4">
+                      <Label :class="connectionLabelClass">Private key</Label>
+                      <div class="col-span-3 flex items-center gap-1">
+                        <Input v-model="sshWorkbenchKeyPath" class="min-w-0 flex-1" placeholder="~/.ssh/id_ed25519" />
+                        <Button v-if="isDesktop" variant="outline" size="icon" class="h-9 w-9 shrink-0" title="Select SSH private key" @click="browseSshKeyPath()">
+                          <FolderOpen class="h-4 w-4" />
+                        </Button>
+                      </div>
+                    </div>
+                    <div class="grid grid-cols-4 items-center gap-4">
+                      <Label :class="connectionLabelClass">Key passphrase</Label>
+                      <PasswordInput v-model="sshWorkbenchKeyPassphrase" class="col-span-3" />
+                    </div>
+                  </template>
+                  <template v-if="sshWorkbenchAuthMethod === 'agent'">
+                    <div class="grid grid-cols-4 items-center gap-4">
+                      <Label :class="connectionLabelClass">Agent socket</Label>
+                      <Input v-model="sshWorkbenchAgentSocket" class="col-span-3" placeholder="SSH_AUTH_SOCK" />
+                    </div>
+                  </template>
+                  <div class="grid grid-cols-4 items-start gap-4">
+                    <span />
+                    <p class="col-span-3 m-0 text-xs leading-5 text-muted-foreground">The workbench reuses DBX known_hosts, SSH config, proxy and jump-host handling. Private keys are referenced by path and are not copied into DBX.</p>
+                  </div>
+                </template>
+
                 <template v-else-if="form.db_type === 'redis'">
                   <div class="grid grid-cols-4 items-center gap-4">
                     <Label :class="connectionLabelSmallClass">{{ t("connection.mode") }}</Label>

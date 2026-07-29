@@ -45,7 +45,7 @@ const TOFU_PROMPT_TIMEOUT: Duration = Duration::from_secs(300);
 /// SSH client handler. Holds a host-key verifier so that
 /// [`client::Handler::check_server_key`] can reject untrusted/changed server
 /// keys *before* any credential is sent.
-struct SshClient {
+pub(crate) struct SshClient {
     host_key_verifier: Arc<HostKeyVerifier>,
     host: String,
     port: u16,
@@ -146,7 +146,12 @@ impl SshClient {
     }
 }
 
+#[cfg(test)]
 fn ssh_client_config() -> Config {
+    ssh_client_config_with_keepalive(Some(Duration::from_secs(30)))
+}
+
+fn ssh_client_config_with_keepalive(keepalive_interval: Option<Duration>) -> Config {
     let mut preferred = Preferred::default();
     let mut kex = preferred.kex.into_owned();
     for algorithm in [kex::ECDH_SHA2_NISTP256, kex::ECDH_SHA2_NISTP384, kex::ECDH_SHA2_NISTP521, kex::DH_G14_SHA1] {
@@ -165,7 +170,7 @@ fn ssh_client_config() -> Config {
     }
     preferred.mac = Cow::Owned(mac);
 
-    Config { nodelay: true, keepalive_interval: Some(Duration::from_secs(30)), preferred, ..Default::default() }
+    Config { nodelay: true, keepalive_interval, preferred, ..Default::default() }
 }
 
 /// Returns `true` only when the server explicitly advertised `password` among
@@ -184,7 +189,7 @@ fn server_offers_password(remaining_methods: &MethodSet) -> bool {
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn connect_and_authenticate(
+pub(crate) async fn connect_and_authenticate(
     connect_host: &str,
     connect_port: u16,
     host_key_host: &str,
@@ -199,7 +204,43 @@ async fn connect_and_authenticate(
     connect_timeout_secs: u64,
     known_hosts_path: &Path,
 ) -> Result<Handle<SshClient>, String> {
-    let config = Arc::new(ssh_client_config());
+    connect_and_authenticate_with_keepalive(
+        connect_host,
+        connect_port,
+        host_key_host,
+        host_key_port,
+        ssh_user,
+        ssh_password,
+        ssh_key_path,
+        ssh_key_passphrase,
+        use_ssh_agent,
+        ssh_agent_sock_path,
+        auth_method,
+        connect_timeout_secs,
+        known_hosts_path,
+        Some(Duration::from_secs(30)),
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn connect_and_authenticate_with_keepalive(
+    connect_host: &str,
+    connect_port: u16,
+    host_key_host: &str,
+    host_key_port: u16,
+    ssh_user: &str,
+    ssh_password: &str,
+    ssh_key_path: &str,
+    ssh_key_passphrase: &str,
+    use_ssh_agent: bool,
+    ssh_agent_sock_path: &str,
+    auth_method: &str,
+    connect_timeout_secs: u64,
+    known_hosts_path: &Path,
+    keepalive_interval: Option<Duration>,
+) -> Result<Handle<SshClient>, String> {
+    let config = Arc::new(ssh_client_config_with_keepalive(keepalive_interval));
     let connect_timeout = Duration::from_secs(connect_timeout_secs);
 
     // Verify the logical SSH server identity against known_hosts before sending
@@ -251,7 +292,7 @@ async fn connect_and_authenticate(
             // showed the server advertises it — otherwise we would leak the
             // password to any endpoint that rejected our (empty) key.
             match &none_res {
-                AuthResult::Failure { remaining_methods, .. } => server_offers_password(remaining_methods),
+                AuthResult::Failure { remaining_methods, .. } => server_offers_password(&remaining_methods),
                 _ => false,
             }
         } else {
@@ -1099,8 +1140,8 @@ mod tests {
     use super::PROMPT_TEST_LOCK;
     use super::{
         connect_and_authenticate, effective_hop_timeout, openssh_padding_len, plan_chain, read_ssh_string,
-        sanitize_unencrypted_openssh_comment_bytes, server_offers_password, ssh_client_config, HostKeyState,
-        HostKeyVerifier, PlannedTunnel, TunnelManager,
+        sanitize_unencrypted_openssh_comment_bytes, server_offers_password, ssh_client_config,
+        ssh_client_config_with_keepalive, HostKeyState, HostKeyVerifier, PlannedTunnel, TunnelManager,
     };
     use crate::db::ssh_prompt;
     use crate::models::connection::{default_ssh_connect_timeout_secs, SshTunnelConfig};
@@ -1113,6 +1154,7 @@ mod tests {
     use russh::MethodSet;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::Arc;
+    use std::time::Duration;
     use tempfile::tempdir;
     use tokio::sync::mpsc;
 
@@ -1227,6 +1269,15 @@ mod tests {
 
         assert!(sha2_etm_index < sha1_etm_index);
         assert!(sha1_etm_index < sha1_index);
+    }
+
+    #[test]
+    fn ssh_client_config_accepts_custom_and_disabled_keepalive() {
+        assert_eq!(
+            ssh_client_config_with_keepalive(Some(Duration::from_secs(45))).keepalive_interval,
+            Some(Duration::from_secs(45))
+        );
+        assert_eq!(ssh_client_config_with_keepalive(None).keepalive_interval, None);
     }
 
     #[test]

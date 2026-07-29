@@ -346,6 +346,7 @@ export function tabModeLabel(tab: QueryTab, t: Translate): string {
   if (tab.mode === "etcd-dashboard") return t("tabs.etcdDashboard");
   if (tab.mode === "zookeeper") return t("tabs.zookeeper");
   if (tab.mode === "nacos") return "Nacos";
+  if (tab.mode === "ssh") return "SSH";
   if (tab.mode === "objects") return t("tabs.objects");
   if (tab.mode === "users") return t("tabs.users");
   return tab.mode;

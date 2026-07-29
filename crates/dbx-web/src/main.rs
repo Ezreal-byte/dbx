@@ -257,14 +257,28 @@ async fn main() {
         password_disabled,
         password_hash: RwLock::new(password_hash),
         sessions: RwLock::new(HashSet::new()),
+        anonymous_ssh_sessions: RwLock::new(HashMap::new()),
         sse_channels: RwLock::new(HashMap::new()),
         transfer_progress_channels: RwLock::new(HashMap::new()),
         table_import_channels: RwLock::new(HashMap::new()),
         sql_file_executions: RwLock::new(HashMap::new()),
         nacos_imports: RwLock::new(HashMap::new()),
+        ssh_downloads: RwLock::new(HashMap::new()),
         login_rate_limit: tokio::sync::Mutex::new(state::LoginRateLimit { fail_count: 0, locked_until: None }),
         export_files: RwLock::new(HashMap::new()),
         ssh_prompts: Arc::new(ssh_prompt::SshPromptHub::new()),
+    });
+    let anonymous_ssh_cleanup_state = web_state.clone();
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(15 * 60));
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            interval.tick().await;
+            let removed = auth::cleanup_expired_anonymous_ssh_sessions(&anonymous_ssh_cleanup_state).await;
+            if removed > 0 {
+                tracing::debug!("Removed {removed} expired anonymous SSH owner sessions");
+            }
+        }
     });
 
     ssh_prompt::install_web_ssh_prompt_bridge(web_state.ssh_prompts.clone());
@@ -516,6 +530,22 @@ async fn main() {
         .route("/redis/execute-command", post(routes::redis::execute_command))
         .route("/redis/pubsub/publish", post(routes::redis::publish_message))
         .route("/redis/pubsub/ws", get(routes::redis_pubsub_ws::ws_handler))
+        // SSH workbench
+        .route("/ssh/test-connection", post(routes::ssh_workbench::test_connection))
+        .route("/ssh/sessions", post(routes::ssh_workbench::create_session))
+        .route("/ssh/sessions/close", post(routes::ssh_workbench::close_session))
+        .route("/ssh/terminal/ws", get(routes::ssh_workbench::terminal_ws))
+        .route("/ssh/sftp/home", post(routes::ssh_workbench::sftp_home))
+        .route("/ssh/sftp/list", post(routes::ssh_workbench::sftp_list))
+        .route("/ssh/sftp/mkdir", post(routes::ssh_workbench::sftp_mkdir))
+        .route("/ssh/sftp/rename", post(routes::ssh_workbench::sftp_rename))
+        .route("/ssh/sftp/delete", post(routes::ssh_workbench::sftp_delete))
+        .route("/ssh/sftp/preview", post(routes::ssh_workbench::sftp_preview))
+        .route("/ssh/sftp/upload", post(routes::ssh_workbench::sftp_upload))
+        .route("/ssh/sftp/download/task", post(routes::ssh_workbench::create_sftp_download))
+        .route("/ssh/sftp/download", get(routes::ssh_workbench::sftp_download))
+        .route("/ssh/sftp/transfers/events", get(routes::ssh_workbench::sftp_transfer_events))
+        .route("/ssh/sftp/transfer/cancel", post(routes::ssh_workbench::cancel_sftp_transfer))
         // Redis Slowlog
         .route("/redis/slowlog-get", post(routes::redis::slowlog_get))
         .route("/redis/cluster-master-nodes", post(routes::redis::cluster_master_nodes))

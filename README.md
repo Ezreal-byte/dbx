@@ -388,6 +388,7 @@ The installer will be in `src-tauri/target/release/bundle/`.
 - [Database Test Lab](https://dbxio.com/en/docs/database-lab) — local database recipes for development and verification
 - [Contributing](CONTRIBUTING.md) — how to pick up issues and open PRs
 - [Web API reference](docs/content/docs/web-api.mdx) — HTTP API for Docker/Web deployments
+- [SSH + SFTP workbench](docs/ssh-workbench.md) — desktop and Docker behavior, authentication, and network requirements
 - [Examples](examples/) — CLI, MCP, Docker, and API samples
 
 ## Community

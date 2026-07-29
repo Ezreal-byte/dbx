@@ -193,6 +193,7 @@ pub struct AppState {
     pub plugins: PluginRegistry,
     pub agent_manager: crate::agent_manager::AgentManager,
     pub nacos_registry: crate::nacos::NacosAdminRegistry,
+    pub ssh_registry: crate::ssh_workbench::SshSessionRegistry,
     duckdb_worker_process_isolation: AtomicBool,
     duckdb_worker_max_processes: AtomicUsize,
     /// PostgreSQL TLS cancel context, keyed by pool_key.
@@ -630,6 +631,7 @@ impl AppState {
         app_version: impl Into<String>,
     ) -> Self {
         let data_dir = storage.data_dir().to_path_buf();
+        let ssh_registry = crate::ssh_workbench::SshSessionRegistry::new(data_dir.clone());
         Self {
             connections: Arc::new(RwLock::new(HashMap::new())),
             task_supervisor: TaskSupervisor::new(),
@@ -648,6 +650,7 @@ impl AppState {
                 app_version,
             ),
             nacos_registry: crate::nacos::NacosAdminRegistry::new(),
+            ssh_registry,
             duckdb_worker_process_isolation: AtomicBool::new(false),
             duckdb_worker_max_processes: AtomicUsize::new(DUCKDB_WORKER_MAX_PROCESSES_DEFAULT),
             postgres_cancel_contexts: Arc::new(RwLock::new(HashMap::new())),
@@ -1107,6 +1110,7 @@ impl AppState {
 
     pub async fn shutdown_background_tasks(&self, deadline: Duration) {
         self.running_queries.cancel_all();
+        self.ssh_registry.close_all_sessions().await;
         self.task_supervisor.shutdown(deadline).await;
     }
 
@@ -1673,6 +1677,9 @@ impl AppState {
                     "Message queue admin support is not compiled in this build. Rebuild with the 'mq-admin' feature."
                         .to_string(),
                 );
+            }
+            DatabaseType::Ssh => {
+                return Err("SSH connections open in the SSH workbench and do not create a database pool".to_string());
             }
         };
 

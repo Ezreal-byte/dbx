@@ -625,6 +625,7 @@ function onOverflowItemKeydown(event: KeyboardEvent, tabId: string, kind: "regul
                       <KeyRound v-else-if="tab.mode === 'etcd' || tab.mode === 'zookeeper'" class="h-3.5 w-3.5" />
                       <Gauge v-else-if="tab.mode === 'etcd-dashboard'" class="h-3.5 w-3.5" />
                       <Network v-else-if="tab.mode === 'nacos'" class="h-3.5 w-3.5" />
+                      <DatabaseIcon v-else-if="tab.mode === 'ssh'" db-type="ssh" class="h-3.5 w-3.5" />
                       <TableProperties v-else-if="tab.mode === 'objects'" class="h-3.5 w-3.5" />
                       <PencilRuler v-else-if="tab.mode === 'structure'" class="h-3.5 w-3.5" />
                       <CalendarClock v-else-if="tab.mode === 'dameng-jobs'" class="h-3.5 w-3.5" />
@@ -747,7 +748,7 @@ function onOverflowItemKeydown(event: KeyboardEvent, tabId: string, kind: "regul
                 @contextmenu="onContextMenu"
                 @keydown="onOverflowItemKeydown($event, tab.id, 'regular')"
               >
-                <DatabaseIcon v-if="tab.mode === 'mq'" :db-type="tabDatabaseIconType(tab)" class="h-3.5 w-3.5 shrink-0" />
+                <DatabaseIcon v-if="tab.mode === 'mq' || tab.mode === 'ssh'" :db-type="tab.mode === 'ssh' ? 'ssh' : tabDatabaseIconType(tab)" class="h-3.5 w-3.5 shrink-0" />
                 <component :is="tabMenuIcon(tab)" v-else :class="['h-3.5 w-3.5 shrink-0', tabIconClass(tab)]" />
                 <span class="inline-flex min-w-0 flex-1 items-center gap-0.5 overflow-hidden">
                   <span v-if="isDirtyTab(tab)" aria-hidden="true" class="dirty-tab-marker">*</span>
@@ -819,6 +820,7 @@ function onOverflowItemKeydown(event: KeyboardEvent, tabId: string, kind: "regul
                       <KeyRound v-else-if="tab.mode === 'etcd' || tab.mode === 'zookeeper'" class="h-3.5 w-3.5" />
                       <Gauge v-else-if="tab.mode === 'etcd-dashboard'" class="h-3.5 w-3.5" />
                       <Network v-else-if="tab.mode === 'nacos'" class="h-3.5 w-3.5" />
+                      <DatabaseIcon v-else-if="tab.mode === 'ssh'" db-type="ssh" class="h-3.5 w-3.5" />
                       <TableProperties v-else-if="tab.mode === 'objects'" class="h-3.5 w-3.5" />
                       <PencilRuler v-else-if="tab.mode === 'structure'" class="h-3.5 w-3.5" />
                       <CalendarClock v-else-if="tab.mode === 'dameng-jobs'" class="h-3.5 w-3.5" />
@@ -887,7 +889,7 @@ function onOverflowItemKeydown(event: KeyboardEvent, tabId: string, kind: "regul
                 @contextmenu="onContextMenu"
                 @keydown="onOverflowItemKeydown($event, tab.id, 'fixed')"
               >
-                <DatabaseIcon v-if="tab.mode === 'mq'" :db-type="tabDatabaseIconType(tab)" class="h-3.5 w-3.5 shrink-0" />
+                <DatabaseIcon v-if="tab.mode === 'mq' || tab.mode === 'ssh'" :db-type="tab.mode === 'ssh' ? 'ssh' : tabDatabaseIconType(tab)" class="h-3.5 w-3.5 shrink-0" />
                 <component :is="tabMenuIcon(tab)" v-else :class="['h-3.5 w-3.5 shrink-0', tabIconClass(tab)]" />
                 <span class="inline-flex min-w-0 flex-1 items-center gap-0.5 overflow-hidden">
                   <span v-if="isDirtyTab(tab)" aria-hidden="true" class="dirty-tab-marker">*</span>

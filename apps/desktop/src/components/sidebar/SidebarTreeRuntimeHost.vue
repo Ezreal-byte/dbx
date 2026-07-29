@@ -69,6 +69,7 @@ import { loadSidebarObjectGroup } from "@/lib/sidebar/sidebarObjectGroupRouting"
 import { mysqlObjectTemplateForGroup } from "@/lib/sidebar/mysqlObjectTemplates";
 import { buildTableDeleteTemplate, buildTableInsertTemplate, buildTableSelectTemplate, buildTableUpdateTemplate } from "@/lib/table/tableSqlTemplates";
 import { driverStoreFocusForInstallError } from "@/lib/connection/agentDriverInstallHint";
+import { quickConnectionOpenTarget } from "@/lib/connection/connectionOpenTarget";
 import {
   canCreateConnectionNamespace,
   canCreateDatabaseNodeNamespace,
@@ -514,6 +515,14 @@ async function toggle() {
     node.isExpanded = !node.isExpanded;
     emit("node-toggled", node, wasExpanded);
     return;
+  }
+
+  if (node.type === "connection" && node.connectionId) {
+    const config = connectionStore.getConfig(node.connectionId);
+    if (config && quickConnectionOpenTarget(config).kind === "ssh-workbench") {
+      queryStore.openSshWorkbench(node.connectionId);
+      return;
+    }
   }
 
   // Keep the click path aligned with every object-group definition. In
@@ -3632,12 +3641,26 @@ function buildConnectionSidebarMenu(context: SidebarMenuFactoryContext): boolean
   const { node, items } = context;
   // 2. Connection
   if (node.type === "connection") {
+    const isSshConnection = currentDatabaseType() === "ssh";
     if (isConnecting.value) {
       items.push({ label: t("connection.cancelConnecting"), action: cancelConnectionAttempt, icon: X });
     } else if (!isConnected.value) {
       items.push({ label: t("contextMenu.openConnection"), action: toggle, icon: Plug });
     } else {
       items.push({ label: t("contextMenu.closeConnection"), action: disconnectConnection, icon: Unplug });
+    }
+    if (isSshConnection && node.connectionId) {
+      items.push({
+        label: t("sshWorkbench.open"),
+        icon: FolderOpen,
+        children: [
+          {
+            label: t("sshWorkbench.newSession"),
+            icon: Plus,
+            action: () => queryStore.openSshWorkbench(node.connectionId!, { forceNew: true }),
+          },
+        ],
+      });
     }
     items.push({ label: "", separator: true });
     items.push({ label: t("contextMenu.copyName"), action: copyName, icon: Copy, shortcut: shortcutCopyName.value });
@@ -3653,13 +3676,13 @@ function buildConnectionSidebarMenu(context: SidebarMenuFactoryContext): boolean
       const sqlHistoryMenu = savedSqlHistorySubmenu();
       if (sqlHistoryMenu) items.push(sqlHistoryMenu);
     }
-    if (node.connectionId && connectionSupportsDatabaseUserAdmin(connectionStore.getConfig(node.connectionId))) {
+    if (!isSshConnection && node.connectionId && connectionSupportsDatabaseUserAdmin(connectionStore.getConfig(node.connectionId))) {
       items.push({ label: t("contextMenu.userAdmin"), action: openUserAdmin, icon: UsersRound });
     }
-    if (node.connectionId && connectionSupportsProcessList(connectionStore.getConfig(node.connectionId))) {
+    if (!isSshConnection && node.connectionId && connectionSupportsProcessList(connectionStore.getConfig(node.connectionId))) {
       items.push({ label: t("contextMenu.processList"), action: openProcessList, icon: Activity });
     }
-    if (node.connectionId && (currentDatabaseType() === "nacos" || connectionSupportsServerDashboard(connectionStore.getConfig(node.connectionId)) || connectionSupportsPgServerDashboard(connectionStore.getConfig(node.connectionId)))) {
+    if (!isSshConnection && node.connectionId && (currentDatabaseType() === "nacos" || connectionSupportsServerDashboard(connectionStore.getConfig(node.connectionId)) || connectionSupportsPgServerDashboard(connectionStore.getConfig(node.connectionId)))) {
       items.push({ label: t("contextMenu.serverDashboard"), action: openServerDashboard, icon: Gauge });
     }
     if (currentDatabaseType() === "dameng") {
@@ -3668,23 +3691,23 @@ function buildConnectionSidebarMenu(context: SidebarMenuFactoryContext): boolean
     if (canCopyFinalProxyPort.value) {
       items.push({ label: t("contextMenu.copyFinalProxyPort"), action: copyFinalProxyPort, icon: Network });
     }
-    if (canOpenSqlFileExecution.value) {
+    if (!isSshConnection && canOpenSqlFileExecution.value) {
       items.push({ label: t("sqlFile.title"), action: openSqlFileExecution, icon: FileCode });
     }
-    if (canExportAllDatabases.value) {
+    if (!isSshConnection && canExportAllDatabases.value) {
       items.push({ label: t("contextMenu.exportAllDatabases"), action: openAllDatabasesExport, icon: Upload });
       if (isTauriRuntime()) {
         items.push({ label: t("databaseBackup.title"), action: openScheduledBackups, icon: CalendarClock });
       }
     }
-    if (canCreateDatabase.value) {
+    if (!isSshConnection && canCreateDatabase.value) {
       items.push({
         label: connectionNamespaceCreationLabel(),
         action: openConnectionNamespaceCreation,
         icon: Plus,
       });
     }
-    if (canCreateNacosNamespace.value) {
+    if (!isSshConnection && canCreateNacosNamespace.value) {
       items.push({
         label: t("nacos.createNamespace"),
         action: openCreateNacosNamespaceDialog,
@@ -3715,20 +3738,20 @@ function buildConnectionSidebarMenu(context: SidebarMenuFactoryContext): boolean
       icon: RefreshCw,
       shortcut: shortcutRefresh,
     });
-    if (canConfigureVisibleDatabases.value) {
+    if (!isSshConnection && canConfigureVisibleDatabases.value) {
       items.push({
         label: t("contextMenu.configureVisibleObjects"),
         action: openVisibleDatabasesDialog,
         icon: ListFilter,
       });
-    } else if (canConfigureVisibleSchemas.value) {
+    } else if (!isSshConnection && canConfigureVisibleSchemas.value) {
       items.push({
         label: t("visibleSchemas.title"),
         action: openVisibleSchemasDialog,
         icon: ListFilter,
       });
     }
-    if (canConfigureVisibleSchemas.value) {
+    if (!isSshConnection && canConfigureVisibleSchemas.value) {
       items.push({
         label: t("visibleSchemas.title"),
         action: openVisibleSchemasDialog,

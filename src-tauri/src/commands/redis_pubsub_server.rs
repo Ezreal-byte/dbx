@@ -23,6 +23,10 @@ impl PubSubServerPort {
     fn get(&self) -> Result<u16, String> {
         self.0.ok_or_else(|| "Redis PubSub server is unavailable".to_string())
     }
+
+    pub(crate) fn ssh_get(&self) -> Result<u16, String> {
+        self.0.ok_or_else(|| "SSH terminal server is unavailable".to_string())
+    }
 }
 
 #[derive(Deserialize)]
@@ -32,7 +36,102 @@ struct PubSubWsParams {
 }
 
 pub fn build_pubsub_router(state: Arc<AppState>) -> Router {
-    Router::new().route("/api/redis/pubsub/ws", get(ws_handler)).with_state(state)
+    Router::new()
+        .route("/api/redis/pubsub/ws", get(ws_handler))
+        .route("/api/ssh/terminal/ws", get(ssh_ws_handler))
+        .with_state(state)
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SshWsParams {
+    session_id: String,
+    #[serde(default)]
+    after_sequence: u64,
+}
+
+async fn ssh_ws_handler(
+    ws: WebSocketUpgrade,
+    Query(params): Query<SshWsParams>,
+    State(state): State<Arc<AppState>>,
+) -> impl IntoResponse {
+    ws.on_upgrade(move |socket| handle_ssh_socket(socket, state, params))
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "type", rename_all = "camelCase")]
+enum SshTerminalCommand {
+    Input { data: String },
+    Resize { cols: u32, rows: u32 },
+    DirectoryTracking { enabled: bool },
+    Ping,
+}
+
+async fn handle_ssh_socket(socket: WebSocket, state: Arc<AppState>, params: SshWsParams) {
+    let subscription = state.ssh_registry.subscribe(&params.session_id, params.after_sequence).await;
+    let (replay, mut output_rx) = match subscription {
+        Ok(value) => value,
+        Err(error) => {
+            let (mut sender, _) = socket.split();
+            let payload = serde_json::json!({ "type": "error", "message": error }).to_string();
+            let _ = sender.send(Message::Text(payload.into())).await;
+            return;
+        }
+    };
+    let (mut sender, mut receiver) = socket.split();
+    for frame in replay {
+        if sender.send(ssh_frame_message(frame)).await.is_err() {
+            return;
+        }
+    }
+
+    let registry = state.clone();
+    let session_id = params.session_id.clone();
+    let input = tokio::spawn(async move {
+        while let Some(Ok(message)) = receiver.next().await {
+            let result = match message {
+                Message::Binary(data) => registry.ssh_registry.write_terminal(&session_id, data.to_vec()).await,
+                Message::Text(text) => match serde_json::from_str::<SshTerminalCommand>(&text) {
+                    Ok(SshTerminalCommand::Input { data }) => {
+                        registry.ssh_registry.write_terminal(&session_id, data.into_bytes()).await
+                    }
+                    Ok(SshTerminalCommand::Resize { cols, rows }) => {
+                        registry.ssh_registry.resize_terminal(&session_id, cols, rows).await
+                    }
+                    Ok(SshTerminalCommand::DirectoryTracking { enabled }) => {
+                        registry.ssh_registry.set_directory_tracking(&session_id, enabled).await
+                    }
+                    Ok(SshTerminalCommand::Ping) => Ok(()),
+                    Err(error) => Err(format!("Invalid SSH terminal command: {error}")),
+                },
+                Message::Close(_) => break,
+                _ => Ok(()),
+            };
+            if result.is_err() {
+                break;
+            }
+        }
+    });
+
+    while let Ok(frame) = output_rx.recv().await {
+        if sender.send(ssh_frame_message(frame)).await.is_err() {
+            break;
+        }
+    }
+    input.abort();
+}
+
+fn ssh_frame_message(frame: dbx_core::ssh_workbench::TerminalFrame) -> Message {
+    let stream = match frame.stream {
+        dbx_core::ssh_workbench::TerminalStream::Stdout => 0u8,
+        dbx_core::ssh_workbench::TerminalStream::Stderr => 1u8,
+        dbx_core::ssh_workbench::TerminalStream::State => 2u8,
+    };
+    let mut payload = Vec::with_capacity(9 + frame.data.len());
+    payload.extend_from_slice(&frame.sequence.to_be_bytes());
+    payload.push(stream);
+    payload.extend_from_slice(&frame.data);
+    Message::Binary(payload.into())
 }
 
 fn pubsub_server_port() -> u16 {

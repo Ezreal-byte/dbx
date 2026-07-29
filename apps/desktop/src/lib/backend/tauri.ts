@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
+import { Channel, invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { normalizeRustMongoCommand, type MongoCommand } from "@/lib/mongo/mongoShellCommand";
 import { ExternalSqlFileTooLargeError } from "@/lib/sql/sqlFileOpen";
@@ -45,6 +45,10 @@ import type {
   SshConfigHostEntry,
   TunnelProfile,
   TransactionLog,
+  SshSessionInfo,
+  SftpEntry,
+  SftpTransferTask,
+  SftpPreview,
 } from "@/types/database";
 import { isTauriCommandUnavailable, normalizeConnectionTestResult } from "@/lib/connection/connectionDatabaseInfo";
 import type { CollectionInfo } from "@/types/database";
@@ -1898,6 +1902,90 @@ export async function redisPubSubPublish(connectionId: string, db: number, chann
 export async function redisPubSubConnect(connectionId: string): Promise<WebSocket> {
   const port = await invoke<number>("redis_pubsub_server_port");
   return new WebSocket(`ws://127.0.0.1:${port}/api/redis/pubsub/ws?connectionId=${encodeURIComponent(connectionId)}`);
+}
+
+// --- SSH workbench ---
+
+export async function sshTestConnection(config: ConnectionConfig): Promise<{ message: string }> {
+  const message = await invoke<string>("ssh_test_connection", { config });
+  return { message };
+}
+
+export async function sshCreateSession(config: ConnectionConfig, cols = 120, rows = 32): Promise<SshSessionInfo> {
+  return invoke("ssh_create_session", { config, cols, rows });
+}
+
+export async function sshConnectTerminal(sessionId: string, afterSequence = 0): Promise<WebSocket> {
+  const port = await invoke<number>("ssh_terminal_server_port");
+  const query = `sessionId=${encodeURIComponent(sessionId)}&afterSequence=${afterSequence}`;
+  return new WebSocket(`ws://127.0.0.1:${port}/api/ssh/terminal/ws?${query}`);
+}
+
+export async function sshCloseSession(sessionId: string): Promise<void> {
+  return invoke("ssh_close_session", { sessionId });
+}
+
+export async function sftpHome(sessionId: string): Promise<string> {
+  return invoke("sftp_home", { sessionId });
+}
+
+export async function sftpList(sessionId: string, path: string): Promise<SftpEntry[]> {
+  return invoke("sftp_list", { sessionId, path });
+}
+
+export async function sftpMkdir(sessionId: string, path: string): Promise<void> {
+  return invoke("sftp_mkdir", { sessionId, path });
+}
+
+export async function sftpRename(sessionId: string, from: string, to: string): Promise<void> {
+  return invoke("sftp_rename", { sessionId, from, to });
+}
+
+export async function sftpDelete(sessionId: string, path: string, recursive = false): Promise<void> {
+  return invoke("sftp_delete", { sessionId, path, recursive });
+}
+
+export async function sftpPreview(sessionId: string, path: string, maxBytes = 2 * 1024 * 1024): Promise<SftpPreview> {
+  return invoke("sftp_preview", { sessionId, path, maxBytes });
+}
+
+export async function pickSftpUploadFile(): Promise<string | File | null> {
+  const { open } = await import("@tauri-apps/plugin-dialog");
+  const selected = await open({ multiple: false, directory: false });
+  return typeof selected === "string" ? selected : null;
+}
+
+export async function sftpUpload(sessionId: string, source: string | File, remotePath: string): Promise<SftpTransferTask> {
+  if (typeof source !== "string") throw new Error("Desktop SFTP upload requires a local file path");
+  return invoke("sftp_upload", { sessionId, taskId: crypto.randomUUID(), localPath: source, remotePath });
+}
+
+export async function sftpDownload(sessionId: string, remotePath: string, defaultName: string): Promise<SftpTransferTask | null> {
+  const { save } = await import("@tauri-apps/plugin-dialog");
+  const localPath = await save({ defaultPath: defaultName });
+  if (!localPath) return null;
+  return invoke("sftp_download", { sessionId, taskId: crypto.randomUUID(), remotePath, localPath });
+}
+
+const sftpTransferHandlers = new Set<(task: SftpTransferTask) => void>();
+let sftpTransferListenerPromise: Promise<void> | null = null;
+
+export async function listenSftpTransferProgress(handler: (task: SftpTransferTask) => void): Promise<UnlistenFn> {
+  sftpTransferHandlers.add(handler);
+  if (!sftpTransferListenerPromise) {
+    const channel = new Channel<SftpTransferTask>((task) => {
+      for (const currentHandler of sftpTransferHandlers) currentHandler(task);
+    });
+    sftpTransferListenerPromise = invoke<void>("listen_sftp_transfer_progress", { onProgress: channel });
+  }
+  await sftpTransferListenerPromise;
+  return () => {
+    sftpTransferHandlers.delete(handler);
+  };
+}
+
+export async function cancelSftpTransfer(taskId: string): Promise<void> {
+  return invoke("cancel_sftp_transfer", { taskId });
 }
 
 export async function redisSlowlogGet(connectionId: string, count: number, nodeHost?: string, nodePort?: number): Promise<RedisSlowlogEntry[]> {

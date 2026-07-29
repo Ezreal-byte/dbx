@@ -12,7 +12,7 @@ use sha2::{Digest, Sha256};
 use crate::ai::AiConfigItem;
 use crate::connection_secrets::{
     MQ_AUTH_API_KEY_VALUE_KEY, MQ_AUTH_CLIENT_SECRET_KEY, MQ_AUTH_PASSWORD_KEY, MQ_AUTH_TOKEN_KEY,
-    MQ_TOKEN_SIGNING_KEY, NACOS_AUTH_PASSWORD_KEY, NACOS_RNACOS_CONSOLE_PASSWORD_KEY,
+    MQ_TOKEN_SIGNING_KEY, NACOS_AUTH_PASSWORD_KEY, NACOS_RNACOS_CONSOLE_PASSWORD_KEY, SSH_WORKBENCH_KEY_PASSPHRASE_KEY,
 };
 use crate::models::connection::{ConnectionConfig, DatabaseType, TransportLayerConfig};
 use crate::saved_sql::SavedSqlLibrary;
@@ -38,6 +38,7 @@ const SECRET_KEYS: &[&str] = &[
     MQ_TOKEN_SIGNING_KEY,
     NACOS_AUTH_PASSWORD_KEY,
     NACOS_RNACOS_CONSOLE_PASSWORD_KEY,
+    SSH_WORKBENCH_KEY_PASSPHRASE_KEY,
 ];
 const SSH_TUNNEL_SECRET_PREFIX: &str = "ssh_tunnels.";
 const TRANSPORT_LAYER_SECRET_PREFIX: &str = "transport_layers.";
@@ -607,6 +608,7 @@ fn scrub_connection_secrets(config: &mut ConnectionConfig) {
     config.init_script = None;
     scrub_mq_external_config_secrets(config);
     scrub_nacos_auth_secrets(config);
+    scrub_ssh_workbench_secret(config);
 }
 
 fn webdav_password_account(config: &WebDavConfig) -> String {
@@ -666,6 +668,7 @@ async fn build_sensitive_payload(
         }
         push_mq_external_config_secrets(&mut connection_secrets, config);
         push_nacos_external_config_secrets(&mut connection_secrets, config);
+        push_ssh_workbench_secret(&mut connection_secrets, config);
     }
 
     Ok(SensitiveSyncPayload {
@@ -743,6 +746,17 @@ fn push_nacos_external_config_secrets(secrets: &mut Vec<ConnectionSecretSnapshot
     }
 }
 
+fn push_ssh_workbench_secret(secrets: &mut Vec<ConnectionSecretSnapshot>, config: &ConnectionConfig) {
+    if let Some(workbench) = config
+        .external_config
+        .as_ref()
+        .and_then(|external_config| external_config.get("sshWorkbench"))
+        .and_then(serde_json::Value::as_object)
+    {
+        push_json_secret(secrets, &config.id, SSH_WORKBENCH_KEY_PASSPHRASE_KEY, workbench, "keyPassphrase");
+    }
+}
+
 fn push_json_secret(
     secrets: &mut Vec<ConnectionSecretSnapshot>,
     connection_id: &str,
@@ -789,6 +803,17 @@ fn scrub_nacos_auth_secrets(config: &mut ConnectionConfig) {
         if auth.get("kind").and_then(serde_json::Value::as_str) == Some("usernamePassword") {
             scrub_json_secret(auth, "password");
         }
+    }
+}
+
+fn scrub_ssh_workbench_secret(config: &mut ConnectionConfig) {
+    if let Some(workbench) = config
+        .external_config
+        .as_mut()
+        .and_then(|external_config| external_config.get_mut("sshWorkbench"))
+        .and_then(serde_json::Value::as_object_mut)
+    {
+        scrub_json_secret(workbench, "keyPassphrase");
     }
 }
 

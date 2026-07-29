@@ -41,7 +41,25 @@ export function useFileDrop() {
       const { getCurrentWebview } = await import("@tauri-apps/api/webview");
       const webview = getCurrentWebview();
       await webview.onDragDropEvent(async (event) => {
+        const activeTab = queryStore.tabs.find((tab) => tab.id === queryStore.activeTabId);
+        if (event.payload.type === "enter" || event.payload.type === "over") {
+          if (activeTab?.mode === "ssh") {
+            window.dispatchEvent(new CustomEvent("dbx:ssh-sftp-drag-state", { detail: { tabId: activeTab.id, active: true } }));
+          }
+          return;
+        }
+        if (event.payload.type === "leave") {
+          if (activeTab?.mode === "ssh") {
+            window.dispatchEvent(new CustomEvent("dbx:ssh-sftp-drag-state", { detail: { tabId: activeTab.id, active: false } }));
+          }
+          return;
+        }
         if (event.payload.type !== "drop") return;
+        if (activeTab?.mode === "ssh") {
+          window.dispatchEvent(new CustomEvent("dbx:ssh-sftp-drag-state", { detail: { tabId: activeTab.id, active: false } }));
+          window.dispatchEvent(new CustomEvent("dbx:ssh-sftp-drop", { detail: { tabId: activeTab.id, paths: event.payload.paths } }));
+          return;
+        }
         for (const path of event.payload.paths) {
           const name = path.split("/").pop()?.split("\\").pop() || path;
 
@@ -105,6 +123,12 @@ export function useFileDrop() {
       document.addEventListener("drop", (event: DragEvent) => {
         const files = event.dataTransfer?.files;
         if (!files || files.length === 0) return;
+        const activeTab = queryStore.tabs.find((tab) => tab.id === queryStore.activeTabId);
+        if (activeTab?.mode === "ssh") {
+          event.preventDefault();
+          window.dispatchEvent(new CustomEvent("dbx:ssh-sftp-drop", { detail: { tabId: activeTab.id, files: Array.from(files) } }));
+          return;
+        }
         event.preventDefault();
         for (let i = 0; i < files.length; i++) {
           const file = files[i];
@@ -119,6 +143,11 @@ export function useFileDrop() {
       document.addEventListener("dragover", (event: DragEvent) => {
         const files = event.dataTransfer?.files;
         if (!files || files.length === 0) return;
+        const activeTab = queryStore.tabs.find((tab) => tab.id === queryStore.activeTabId);
+        if (activeTab?.mode === "ssh") {
+          event.preventDefault();
+          return;
+        }
         for (let i = 0; i < files.length; i++) {
           if (isSqlFilePath(files[i].name)) {
             event.preventDefault();

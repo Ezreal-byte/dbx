@@ -28,6 +28,10 @@ describe("quickConnectionOpenTarget", () => {
     expect(quickConnectionOpenTarget(connection("nacos"))).toEqual({ kind: "nacos-admin" });
   });
 
+  it("opens SSH connections in the SSH workbench without using the database pool", () => {
+    expect(quickConnectionOpenTarget(connection("ssh"))).toEqual({ kind: "ssh-workbench" });
+  });
+
   it("opens Etcd connections in the key browser", () => {
     expect(quickConnectionOpenTarget(connection("etcd"))).toEqual({ kind: "etcd" });
   });

@@ -65,7 +65,8 @@ export type DatabaseType =
   | "influxdb"
   | "jdbc"
   | "mq"
-  | "nacos";
+  | "nacos"
+  | "ssh";
 
 export interface SqlSnippet {
   id: string;
@@ -245,6 +246,56 @@ export interface SshConfigHostEntry {
   port?: number;
   user?: string;
   identity_file?: string;
+}
+
+export interface SshWorkbenchConfig {
+  authMethod: "password" | "key" | "key+password" | "agent" | "none";
+  keyPath?: string;
+  keyPassphrase?: string;
+  useSshAgent?: boolean;
+  sshAgentSockPath?: string;
+  terminalType?: string;
+  cols?: number;
+  rows?: number;
+}
+
+export interface SshSessionInfo {
+  sessionId: string;
+  connectionId: string;
+  connected: boolean;
+  sequence: number;
+}
+
+export type TerminalControlMessage = { type: "input"; data: string } | { type: "resize"; cols: number; rows: number } | { type: "directoryTracking"; enabled: boolean } | { type: "ping" };
+
+export type SftpEntryKind = "file" | "directory" | "symlink" | "other";
+
+export interface SftpEntry {
+  name: string;
+  path: string;
+  kind: SftpEntryKind;
+  size?: number | null;
+  modifiedAt?: number | null;
+  permissions?: string | null;
+}
+
+export interface SftpPreview {
+  base64: string;
+  size: number;
+}
+
+export type SftpTransferDirection = "upload" | "download";
+export type SftpTransferStatus = "queued" | "running" | "completed" | "cancelled" | "failed";
+
+export interface SftpTransferTask {
+  taskId: string;
+  sessionId: string;
+  direction: SftpTransferDirection;
+  fileName: string;
+  size: number;
+  transferred: number;
+  status: SftpTransferStatus;
+  error?: string | null;
 }
 
 export interface ProxyTunnelConfig {
@@ -951,7 +1002,8 @@ export interface QueryTab {
     | "dameng-jobs"
     | "processlist"
     | "mysql-dashboard"
-    | "postgres-dashboard";
+    | "postgres-dashboard"
+    | "ssh";
   /** Ephemeral navigation intent; it is consumed by HBaseBrowser and is not persisted. */
   hbaseCreateTableOnOpen?: boolean;
   mqTenant?: string;
@@ -962,6 +1014,11 @@ export interface QueryTab {
   nacosTargetGroup?: string;
   nacosTargetKeyword?: string;
   nacosTargetRequestId?: number;
+  sshSessionId?: string;
+  sshLastSequence?: number;
+  sshSftpPath?: string;
+  sshFollowDirectory?: boolean;
+  sshRestored?: boolean;
   structureTableName?: string;
   structureInitialTab?: TableInfoTab;
   structureInitialTabRequestId?: number;

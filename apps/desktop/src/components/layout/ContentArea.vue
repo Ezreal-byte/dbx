@@ -55,6 +55,7 @@ const ElasticsearchJsonResponsePanel = defineAsyncComponent(() => import("@/comp
 const MqAdminConsole = defineAsyncComponent(() => import("@/components/mq/MqAdminConsole.vue"));
 const NacosAdminConsole = defineAsyncComponent(() => import("@/components/nacos/NacosAdminConsole.vue"));
 const NacosDashboard = defineAsyncComponent(() => import("@/components/nacos/NacosDashboard.vue"));
+const SshWorkbench = defineAsyncComponent(() => import("@/components/ssh/SshWorkbench.vue"));
 const ObjectBrowser = defineAsyncComponent(() => import("@/components/objects/ObjectBrowser.vue"));
 const TableStructureEditor = defineAsyncComponent(() => import("@/components/structure/TableStructureEditor.vue"));
 const DatabaseUserAdmin = defineAsyncComponent(() => import("@/components/admin/DatabaseUserAdmin.vue"));
@@ -1854,6 +1855,12 @@ defineExpose({ focusSearch, refreshData, refreshQueryEditorCompletionCache, hand
           :target-request-id="activeTab.nacosTargetRequestId"
           :read-only="activeConnection?.read_only ?? false"
         />
+      </div>
+    </template>
+
+    <template v-else-if="activeTab.mode === 'ssh' && activeConnection">
+      <div class="flex-1 min-h-0">
+        <SshWorkbench :key="activeTab.id" :tab="activeTab" :connection="activeConnection" />
       </div>
     </template>
 

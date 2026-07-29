@@ -11,7 +11,7 @@ use crate::ai::{AiChatMessage, AiChatSelectionState, AiConfig, AiConfigItem, AiC
 use crate::connection_secrets::{
     MQ_AUTH_API_KEY_VALUE_KEY, MQ_AUTH_CLIENT_SECRET_KEY, MQ_AUTH_PASSWORD_KEY, MQ_AUTH_SECRET_PREFIX,
     MQ_AUTH_TOKEN_KEY, MQ_TOKEN_SIGNING_KEY, MQ_TOKEN_SIGNING_SECRET_PREFIX, NACOS_AUTH_PASSWORD_KEY,
-    NACOS_AUTH_SECRET_PREFIX, NACOS_RNACOS_CONSOLE_PASSWORD_KEY,
+    NACOS_AUTH_SECRET_PREFIX, NACOS_RNACOS_CONSOLE_PASSWORD_KEY, SSH_WORKBENCH_KEY_PASSPHRASE_KEY,
 };
 use crate::db::sqlite::{connect_path_create_if_missing, SqliteHandle};
 use crate::history::{
@@ -701,6 +701,12 @@ fn scrub_nacos_auth_secrets(config: &mut ConnectionConfig) {
         if auth.get("kind").and_then(serde_json::Value::as_str) == Some("usernamePassword") {
             scrub_json_secret(auth, "password");
         }
+    }
+}
+
+fn scrub_ssh_workbench_secret(config: &mut ConnectionConfig) {
+    if let Some(workbench) = ssh_workbench_object_mut(config.external_config.as_mut()) {
+        scrub_json_secret(workbench, "keyPassphrase");
     }
 }
 
@@ -2038,6 +2044,7 @@ fn persist_connection_in_tx(tx: &rusqlite::Transaction<'_>, config: &ConnectionC
     scrub_mq_auth_secrets(&mut sanitized);
     scrub_mq_token_signing_secret(&mut sanitized);
     scrub_nacos_auth_secrets(&mut sanitized);
+    scrub_ssh_workbench_secret(&mut sanitized);
     let json = serde_json::to_string(&sanitized).map_err(|e| e.to_string())?;
 
     tx.execute("INSERT INTO connections (id, config_json) VALUES (?1, ?2)", params![config_id, json])
@@ -2099,7 +2106,8 @@ fn persist_connection_in_tx(tx: &rusqlite::Transaction<'_>, config: &ConnectionC
     }
     persist_mq_auth_secrets_in_tx(tx, &config)?;
     persist_mq_token_signing_secret_in_tx(tx, &config)?;
-    persist_nacos_auth_secrets_in_tx(tx, &config)
+    persist_nacos_auth_secrets_in_tx(tx, &config)?;
+    persist_ssh_workbench_secret_in_tx(tx, &config)
 }
 
 fn preserve_unreadable_connections_for_replacement(
@@ -2173,6 +2181,7 @@ impl Storage {
                 scrub_mq_auth_secrets(&mut sanitized);
                 scrub_mq_token_signing_secret(&mut sanitized);
                 scrub_nacos_auth_secrets(&mut sanitized);
+                scrub_ssh_workbench_secret(&mut sanitized);
                 let json = serde_json::to_string(&sanitized).map_err(|e| e.to_string())?;
 
                 tx.execute("INSERT INTO connections (id, config_json) VALUES (?1, ?2)", params![config_id, json])
@@ -2337,13 +2346,17 @@ impl Storage {
             let needs_mq_auth_rewrite = self.hydrate_mq_auth_secrets(&id, &mut config).await?;
             let needs_mq_token_signing_rewrite = self.hydrate_mq_token_signing_secret(&id, &mut config).await?;
             let needs_nacos_auth_rewrite = self.hydrate_nacos_auth_secret(&id, &mut config).await?;
-            let needs_external_secret_rewrite =
-                needs_mq_auth_rewrite || needs_mq_token_signing_rewrite || needs_nacos_auth_rewrite;
+            let needs_ssh_workbench_rewrite = self.hydrate_ssh_workbench_secret(&id, &mut config).await?;
+            let needs_external_secret_rewrite = needs_mq_auth_rewrite
+                || needs_mq_token_signing_rewrite
+                || needs_nacos_auth_rewrite
+                || needs_ssh_workbench_rewrite;
             if needs_external_secret_rewrite {
                 let mut sanitized = config.clone().canonicalized();
                 scrub_mq_auth_secrets(&mut sanitized);
                 scrub_mq_token_signing_secret(&mut sanitized);
                 scrub_nacos_auth_secrets(&mut sanitized);
+                scrub_ssh_workbench_secret(&mut sanitized);
                 let sanitized_json = serde_json::to_string(&sanitized).map_err(|e| e.to_string())?;
                 let update_id = id.clone();
                 self.with_conn(move |conn| {
@@ -2428,6 +2441,17 @@ impl Storage {
             }
         }
         Ok(rewritten)
+    }
+
+    async fn hydrate_ssh_workbench_secret(
+        &self,
+        connection_id: &str,
+        config: &mut ConnectionConfig,
+    ) -> Result<bool, String> {
+        let Some(workbench) = ssh_workbench_object_mut(config.external_config.as_mut()) else {
+            return Ok(false);
+        };
+        hydrate_mq_json_secret(self, connection_id, SSH_WORKBENCH_KEY_PASSPHRASE_KEY, workbench, "keyPassphrase").await
     }
 }
 
@@ -3514,6 +3538,18 @@ fn persist_nacos_auth_secrets_in_tx(tx: &rusqlite::Transaction<'_>, config: &Con
     Ok(())
 }
 
+fn persist_ssh_workbench_secret_in_tx(tx: &rusqlite::Transaction<'_>, config: &ConnectionConfig) -> Result<(), String> {
+    let Some(workbench) = ssh_workbench_object(config.external_config.as_ref()) else {
+        tx.execute(
+            "DELETE FROM connection_secrets WHERE connection_id = ?1 AND key = ?2",
+            params![config.id, SSH_WORKBENCH_KEY_PASSPHRASE_KEY],
+        )
+        .map_err(|error| error.to_string())?;
+        return Ok(());
+    };
+    persist_json_secret_if_present_in_tx(tx, &config.id, SSH_WORKBENCH_KEY_PASSPHRASE_KEY, workbench, "keyPassphrase")
+}
+
 fn persist_json_secret_if_present_in_tx(
     tx: &rusqlite::Transaction<'_>,
     connection_id: &str,
@@ -3593,6 +3629,16 @@ fn nacos_console_auth_object_mut(
     value: Option<&mut serde_json::Value>,
 ) -> Option<&mut serde_json::Map<String, serde_json::Value>> {
     value?.get_mut("rnacosConsoleAuth")?.as_object_mut()
+}
+
+fn ssh_workbench_object(value: Option<&serde_json::Value>) -> Option<&serde_json::Map<String, serde_json::Value>> {
+    value?.get("sshWorkbench")?.as_object()
+}
+
+fn ssh_workbench_object_mut(
+    value: Option<&mut serde_json::Value>,
+) -> Option<&mut serde_json::Map<String, serde_json::Value>> {
+    value?.get_mut("sshWorkbench")?.as_object_mut()
 }
 
 fn is_api_key_auth_kind(kind: &str) -> bool {

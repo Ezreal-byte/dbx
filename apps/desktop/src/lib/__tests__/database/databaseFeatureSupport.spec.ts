@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { connectionNamespaceCreationTarget, databaseNodeNamespaceCreationTarget } from "@/lib/database/databaseNamespaceCreation";
 import { editableDatabasePropertyGroups, editableSchemaPropertyGroups } from "@/lib/database/databasePropertyEditing";
 import { buildGetDatabaseCommentSql } from "@/lib/database/dbAdminSql";
-import { isSchemaAware, supportsDatabaseSchemaQualifier, supportsSqlInListPaste, supportsTransaction } from "@/lib/database/databaseFeatureSupport";
+import { isSchemaAware, supportsConnectionQueryActions, supportsDatabaseSchemaQualifier, supportsSqlInListPaste, supportsTransaction } from "@/lib/database/databaseFeatureSupport";
 
 describe("schema awareness", () => {
   it("keeps SQLite database aliases separate from schema-capable databases", () => {
@@ -77,6 +77,14 @@ describe("supportsSqlInListPaste", () => {
 
   it("excludes Neo4j because Cypher uses list syntax instead of SQL IN tuples", () => {
     expect(supportsSqlInListPaste("neo4j")).toBe(false);
+  });
+});
+
+describe("supportsConnectionQueryActions", () => {
+  it("keeps SQL actions out of service workbench connections", () => {
+    expect(supportsConnectionQueryActions("ssh")).toBe(false);
+    expect(supportsConnectionQueryActions("nacos")).toBe(false);
+    expect(supportsConnectionQueryActions("postgres")).toBe(true);
   });
 });
 
