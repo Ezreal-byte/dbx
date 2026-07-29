@@ -2198,11 +2198,12 @@ export async function pickSftpUploadFile(): Promise<string | File | null> {
   });
 }
 
-export async function sftpUpload(sessionId: string, source: string | File, remotePath: string): Promise<SftpTransferTask> {
+export async function sftpUpload(sessionId: string, source: string | File, remotePath: string, taskId = crypto.randomUUID()): Promise<SftpTransferTask> {
   if (!(source instanceof File)) throw new Error("Web SFTP upload requires a browser File");
   const form = new FormData();
   form.append("sessionId", sessionId);
   form.append("remotePath", remotePath);
+  form.append("taskId", taskId);
   form.append("file", source);
   const response = await fetch(apiUrl("/api/ssh/sftp/upload"), { method: "POST", body: form });
   if (!response.ok) throw new Error(await response.text());

@@ -3,7 +3,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue"
 import { useI18n } from "vue-i18n";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
-import { ArrowDown, ArrowLeftRight, ArrowUp, ArrowUpDown, ClipboardPaste, Columns3, Copy, Download, Eraser, File, FileDown, FileText, FileUp, Folder, FolderPlus, Home, ListChecks, Loader2, Pencil, RefreshCw, TextSelect, Trash2, X } from "@lucide/vue";
+import { ArrowDown, ArrowLeftRight, ArrowUp, ArrowUpDown, ClipboardPaste, Columns3, Copy, Download, Eraser, File as FileIcon, FileDown, FileText, FileUp, Folder, FolderPlus, Home, ListChecks, Loader2, Pencil, RefreshCw, TextSelect, Trash2, X } from "@lucide/vue";
 import { Pane, Splitpanes } from "splitpanes";
 import type { Detection as ZmodemDetection, Session as ZmodemSession, Sentry as ZmodemSentry } from "zmodem.js";
 import "@xterm/xterm/css/xterm.css";
@@ -21,6 +21,7 @@ import { Osc7DirectoryParser } from "@/lib/ssh/terminalDirectoryTracking";
 import { shouldReattachTerminal, terminalReconnectDelay } from "@/lib/ssh/terminalReconnect";
 import { createZmodemSentry, sendZmodemFiles, type ZmodemUploadProgress } from "@/lib/ssh/terminalZmodem";
 import { getSshWorkbenchSplitLayout, type SshWorkbenchPaneOrder } from "@/lib/ssh/workbenchLayout";
+import { sampleTransferSpeed, type TransferSpeedSample } from "@/lib/ssh/transferSpeed";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
@@ -100,7 +101,7 @@ let unlistenTransferProgress: (() => void) | null = null;
 let lastCols = 0;
 let lastRows = 0;
 let directoryRequestSequence = 0;
-const transferSamples = new Map<string, { transferred: number; sampledAt: number; speed: number }>();
+const transferSamples = new Map<string, TransferSpeedSample>();
 const directoryParser = new Osc7DirectoryParser();
 
 type SftpColumn = "size" | "modified" | "permissions";
@@ -863,11 +864,38 @@ async function uploadFile() {
 async function uploadSources(sources: Array<string | File>) {
   if (!props.tab.sshSessionId || !canWrite.value || sources.length === 0) return;
   transferPopoverOpen.value = true;
-  for (const source of sources) {
-    const task = await api.sftpUpload(props.tab.sshSessionId, source, joinRemotePath(currentPath.value, localFileName(source)));
-    transferTasks.value[task.taskId] = task;
-  }
+  const sessionId = props.tab.sshSessionId;
+  const results = await Promise.all(
+    sources.map(async (source) => {
+      const taskId = crypto.randomUUID();
+      const fileName = localFileName(source);
+      const optimisticTask: SftpTransferTask = {
+        taskId,
+        sessionId,
+        direction: "upload",
+        fileName,
+        size: source instanceof File ? source.size : 0,
+        transferred: 0,
+        status: "queued",
+        error: null,
+      };
+      updateTransferTask(optimisticTask);
+      try {
+        updateTransferTask(await api.sftpUpload(sessionId, source, joinRemotePath(currentPath.value, fileName), taskId));
+        return null;
+      } catch (error) {
+        updateTransferTask({
+          ...optimisticTask,
+          status: "failed",
+          error: error instanceof Error ? error.message : String(error),
+        });
+        return error;
+      }
+    }),
+  );
   await loadDirectory();
+  const failure = results.find((result) => result !== null);
+  if (failure) throw failure;
   toast(t("sshWorkbench.uploaded", { count: sources.length }));
 }
 
@@ -875,15 +903,9 @@ function updateTransferTask(task: SftpTransferTask) {
   if (task.sessionId !== props.tab.sshSessionId) return;
   const isNewTask = !transferTasks.value[task.taskId];
   const sampledAt = performance.now();
-  const previous = transferSamples.get(task.taskId);
-  if (previous && task.transferred >= previous.transferred && sampledAt > previous.sampledAt) {
-    const instantaneous = ((task.transferred - previous.transferred) * 1000) / (sampledAt - previous.sampledAt);
-    const speed = previous.speed > 0 ? previous.speed * 0.65 + instantaneous * 0.35 : instantaneous;
-    transferSamples.set(task.taskId, { transferred: task.transferred, sampledAt, speed });
-    transferSpeeds.value[task.taskId] = speed;
-  } else {
-    transferSamples.set(task.taskId, { transferred: task.transferred, sampledAt, speed: previous?.speed ?? 0 });
-  }
+  const sample = sampleTransferSpeed(transferSamples.get(task.taskId), task.transferred, sampledAt);
+  transferSamples.set(task.taskId, sample);
+  transferSpeeds.value[task.taskId] = sample.speed;
   transferTasks.value[task.taskId] = task;
   if (isNewTask && (task.status === "queued" || task.status === "running")) transferPopoverOpen.value = true;
 }
@@ -912,6 +934,17 @@ async function onSftpDrop(event: Event) {
   sftpDragActive.value = false;
   try {
     await uploadSources(detail.paths || detail.files || []);
+  } catch (error) {
+    toast(error instanceof Error ? error.message : String(error), 5000);
+  }
+}
+
+async function onNativeSftpDrop(event: DragEvent) {
+  sftpDragActive.value = false;
+  const files = Array.from(event.dataTransfer?.files || []);
+  if (files.length === 0) return;
+  try {
+    await uploadSources(files);
   } catch (error) {
     toast(error instanceof Error ? error.message : String(error), 5000);
   }
@@ -1188,7 +1221,7 @@ onBeforeUnmount(() => {
       </Pane>
 
       <Pane :size="100 - splitRatio" :min-size="20">
-        <section class="sftp-pane" :class="{ 'sftp-drag-active': sftpDragActive }" @dragenter.prevent="sftpDragActive = true" @dragover.prevent="sftpDragActive = true" @dragleave.self="sftpDragActive = false" @drop.prevent="sftpDragActive = false">
+        <section class="sftp-pane" :class="{ 'sftp-drag-active': sftpDragActive }" @dragenter.prevent="sftpDragActive = true" @dragover.prevent="sftpDragActive = true" @dragleave.self="sftpDragActive = false" @drop.prevent.stop="onNativeSftpDrop">
           <div class="path-row">
             <Tooltip>
               <TooltipTrigger as-child>
@@ -1236,14 +1269,14 @@ onBeforeUnmount(() => {
                 <div v-if="renamingPath === entry.path" class="flex min-w-0 items-center gap-2">
                   <Folder v-if="entry.kind === 'directory'" class="h-4 w-4 shrink-0 text-amber-500" />
                   <FileText v-else-if="entry.kind === 'file'" class="h-4 w-4 shrink-0 text-sky-500" />
-                  <File v-else class="h-4 w-4 shrink-0 text-muted-foreground" />
+                  <FileIcon v-else class="h-4 w-4 shrink-0 text-muted-foreground" />
                   <Input ref="renameInput" v-model="renameDraft" class="h-6 min-w-0 flex-1 px-1.5 text-xs" :disabled="renameSubmitting" @click.stop @dblclick.stop @keydown.enter.prevent.stop="submitRename(entry)" @keydown.esc.prevent.stop="cancelRename" @blur="submitRename(entry)" />
                 </div>
                 <LightTooltip v-else :text="entry.name">
                   <div class="flex min-w-0 items-center gap-2">
                     <Folder v-if="entry.kind === 'directory'" class="h-4 w-4 shrink-0 text-amber-500" />
                     <FileText v-else-if="entry.kind === 'file'" class="h-4 w-4 shrink-0 text-sky-500" />
-                    <File v-else class="h-4 w-4 shrink-0 text-muted-foreground" />
+                    <FileIcon v-else class="h-4 w-4 shrink-0 text-muted-foreground" />
                     <span class="truncate">{{ entry.name }}</span>
                   </div>
                 </LightTooltip>

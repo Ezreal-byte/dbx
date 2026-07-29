@@ -205,12 +205,14 @@ pub async fn sftp_upload(
 ) -> Result<Json<SftpTransferTask>, (StatusCode, String)> {
     let mut session_id: Option<String> = None;
     let mut remote_path = None;
+    let mut task_id = None;
     let mut temp_file = None;
     let mut authorized = false;
     while let Some(mut field) = multipart.next_field().await.map_err(bad_request)? {
         match field.name() {
             Some("sessionId") => session_id = Some(field.text().await.map_err(bad_request)?),
             Some("remotePath") => remote_path = Some(field.text().await.map_err(bad_request)?),
+            Some("taskId") => task_id = Some(field.text().await.map_err(bad_request)?),
             Some("file") => {
                 // Authorization must succeed before writing anything to disk (C-3 fix).
                 let sid = session_id.as_deref().ok_or_else(|| bad_request("sessionId must precede the file field"))?;
@@ -235,7 +237,10 @@ pub async fn sftp_upload(
     if !authorized {
         authorize_session(&state, &headers, &session_id).await?;
     }
-    let task_id = uuid::Uuid::new_v4().to_string();
+    let task_id = match task_id {
+        Some(task_id) => uuid::Uuid::parse_str(&task_id).map_err(|_| bad_request("Invalid taskId"))?.to_string(),
+        None => uuid::Uuid::new_v4().to_string(),
+    };
     let remote_path = remote_path.ok_or_else(|| bad_request("Missing remotePath"))?;
     let temp_file = temp_file.ok_or_else(|| bad_request("Missing file"))?;
     let result = state.app.ssh_registry.sftp_upload_task(&session_id, &task_id, &temp_file.0, &remote_path).await;

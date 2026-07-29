@@ -1955,9 +1955,9 @@ export async function pickSftpUploadFile(): Promise<string | File | null> {
   return typeof selected === "string" ? selected : null;
 }
 
-export async function sftpUpload(sessionId: string, source: string | File, remotePath: string): Promise<SftpTransferTask> {
+export async function sftpUpload(sessionId: string, source: string | File, remotePath: string, taskId = crypto.randomUUID()): Promise<SftpTransferTask> {
   if (typeof source !== "string") throw new Error("Desktop SFTP upload requires a local file path");
-  return invoke("sftp_upload", { sessionId, taskId: crypto.randomUUID(), localPath: source, remotePath });
+  return invoke("sftp_upload", { sessionId, taskId, localPath: source, remotePath });
 }
 
 export async function sftpDownload(sessionId: string, remotePath: string, defaultName: string): Promise<SftpTransferTask | null> {

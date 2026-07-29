@@ -812,7 +812,8 @@ impl SshSessionRegistry {
             .await
             .map_err(|error| format!("Failed to inspect local file: {error}"))?
             .len();
-        let file_name = local_path.file_name().and_then(|value| value.to_str()).unwrap_or("upload").to_string();
+        let file_name =
+            remote_path.rsplit('/').next().filter(|value| !value.is_empty()).unwrap_or("upload").to_string();
         let mut task = SftpTransferTask {
             task_id: task_id.to_string(),
             session_id: session_id.to_string(),

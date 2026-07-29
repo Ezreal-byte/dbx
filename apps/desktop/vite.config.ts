@@ -99,6 +99,13 @@ export default defineConfig(async () => ({
         target: backendUrl,
         changeOrigin: true,
         ws: true,
+        configure(proxy) {
+          proxy.on("proxyReqWs", (proxyRequest) => {
+            // The backend enforces same-origin terminal sockets. Vite changes
+            // Host to the proxy target, so Origin must follow it as well.
+            proxyRequest.setHeader("origin", new URL(backendUrl).origin);
+          });
+        },
         rewrite: publicBasePath ? (requestPath) => requestPath.slice(publicBasePath.length) || "/" : undefined,
       },
     },
