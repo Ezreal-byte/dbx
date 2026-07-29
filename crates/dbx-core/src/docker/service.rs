@@ -246,17 +246,12 @@ pub async fn docker_remove_container_core(
 ) -> Result<(), String> {
     let (connection, client, _) = connection_and_client(state, connection_id).await?;
     ensure_writable(&connection, "container deletion")?;
-    let result =
-        client.delete_empty(&format!("/containers/{}?force=false&v=false", encoded_id(container_id))).await;
+    let result = client.delete_empty(&format!("/containers/{}?force=false&v=false", encoded_id(container_id))).await;
     audit_result(connection_id, container_id, "remove-container", &result);
     result
 }
 
-pub async fn docker_remove_image_core(
-    state: &AppState,
-    connection_id: &str,
-    image_id: &str,
-) -> Result<(), String> {
+pub async fn docker_remove_image_core(state: &AppState, connection_id: &str, image_id: &str) -> Result<(), String> {
     let (connection, client, _) = connection_and_client(state, connection_id).await?;
     ensure_writable(&connection, "image deletion")?;
     let result = client.delete_empty(&format!("/images/{}?force=false&noprune=true", encoded_id(image_id))).await;
@@ -342,9 +337,7 @@ pub async fn docker_export_image_response_core(
     image_id: &str,
 ) -> Result<reqwest::Response, String> {
     let (_, client, _) = connection_and_client(state, connection_id).await?;
-    client
-        .request_stream(Method::GET, &format!("/images/{}/get", encoded_id(image_id)), None, None)
-        .await
+    client.request_stream(Method::GET, &format!("/images/{}/get", encoded_id(image_id)), None, None).await
 }
 
 pub async fn docker_pull_image_response_core(
@@ -421,10 +414,7 @@ async fn docker_exec_output(
         .await?;
     let exec_id = create.get("Id").and_then(Value::as_str).ok_or("Docker exec did not return an ID")?;
     let bytes = client
-        .post_bytes(
-            &format!("/exec/{}/start", encoded_id(exec_id)),
-            serde_json::json!({"Detach": false, "Tty": false}),
-        )
+        .post_bytes(&format!("/exec/{}/start", encoded_id(exec_id)), serde_json::json!({"Detach": false, "Tty": false}))
         .await?;
     let output = decode_multiplexed_bytes(&bytes);
     let inspect: Value = client.get(&format!("/exec/{}/json", encoded_id(exec_id))).await?;
@@ -439,12 +429,8 @@ pub fn decode_multiplexed_bytes(bytes: &[u8]) -> Vec<u8> {
     let mut output = Vec::new();
     let mut offset = 0usize;
     while offset + 8 <= bytes.len() && matches!(bytes[offset], 0 | 1 | 2) {
-        let length = u32::from_be_bytes([
-            bytes[offset + 4],
-            bytes[offset + 5],
-            bytes[offset + 6],
-            bytes[offset + 7],
-        ]) as usize;
+        let length =
+            u32::from_be_bytes([bytes[offset + 4], bytes[offset + 5], bytes[offset + 6], bytes[offset + 7]]) as usize;
         if offset + 8 + length > bytes.len() {
             break;
         }
@@ -491,10 +477,13 @@ pub async fn docker_list_container_files_core(
     let (_, client, _) = connection_and_client(state, connection_id).await?;
     let path = validate_container_path(path)?;
     let script = r#"for entry in "$1"/* "$1"/.[!.]* "$1"/..?*; do [ -e "$entry" ] || [ -L "$entry" ] || continue; stat -c '%F	%s	%Y	%n' -- "$entry"; done"#;
-    let output =
-        docker_exec_output(&client, container_id, vec!["/bin/sh".into(), "-c".into(), script.into(), "dbx".into(), path])
-            .await
-            .map_err(|error| format!("Container file browsing requires /bin/sh and stat: {error}"))?;
+    let output = docker_exec_output(
+        &client,
+        container_id,
+        vec!["/bin/sh".into(), "-c".into(), script.into(), "dbx".into(), path],
+    )
+    .await
+    .map_err(|error| format!("Container file browsing requires /bin/sh and stat: {error}"))?;
     let text = String::from_utf8_lossy(&output);
     let mut entries = Vec::new();
     for line in text.lines() {
@@ -514,13 +503,7 @@ pub async fn docker_list_container_files_core(
         } else {
             "file"
         };
-        entries.push(DockerFileEntry {
-            name,
-            path: full_path.to_string(),
-            kind: kind.to_string(),
-            size,
-            modified,
-        });
+        entries.push(DockerFileEntry { name, path: full_path.to_string(), kind: kind.to_string(), size, modified });
     }
     entries.sort_by(|left, right| {
         (left.kind != "directory", left.name.to_ascii_lowercase())
@@ -541,13 +524,7 @@ pub async fn docker_preview_container_file_core(
     let output = docker_exec_output(
         &client,
         container_id,
-        vec![
-            "/bin/sh".into(),
-            "-c".into(),
-            format!("head -c {} -- \"$1\"", LIMIT + 1),
-            "dbx".into(),
-            path.clone(),
-        ],
+        vec!["/bin/sh".into(), "-c".into(), format!("head -c {} -- \"$1\"", LIMIT + 1), "dbx".into(), path.clone()],
     )
     .await
     .map_err(|error| format!("Container file preview requires /bin/sh and head: {error}"))?;

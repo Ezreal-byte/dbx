@@ -439,10 +439,7 @@ fn default_log_tail() -> usize {
 
 impl Default for DockerLogOptions {
     fn default() -> Self {
-        Self {
-            tail: default_log_tail(),
-            timestamps: false,
-        }
+        Self { tail: default_log_tail(), timestamps: false }
     }
 }
 

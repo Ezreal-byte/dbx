@@ -1,8 +1,8 @@
 use std::convert::Infallible;
 use std::sync::Arc;
 
-use axum::extract::{Query, State};
 use axum::body::Body;
+use axum::extract::{Query, State};
 use axum::http::{header, HeaderValue, StatusCode};
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
@@ -289,22 +289,28 @@ pub async fn export_image(
 ) -> Result<Response, AppError> {
     let upstream =
         dbx_core::docker::docker_export_image_response_core(&state.app, &request.connection_id, &request.image_id)
-        .await
-        .map_err(AppError::from)?;
+            .await
+            .map_err(AppError::from)?;
     let mut response = Body::from_stream(upstream.bytes_stream()).into_response();
     response.headers_mut().insert(header::CONTENT_TYPE, HeaderValue::from_static("application/x-tar"));
-    response.headers_mut().insert(
-        header::CONTENT_DISPOSITION,
-        HeaderValue::from_static("attachment; filename=\"docker-image.tar\""),
-    );
+    response
+        .headers_mut()
+        .insert(header::CONTENT_DISPOSITION, HeaderValue::from_static("attachment; filename=\"docker-image.tar\""));
     Ok(response)
 }
 
 fn binary_download_response(bytes: Vec<u8>, file_name: &str) -> Response {
-    let safe_name: String = file_name
-        .chars()
-        .map(|character| if character.is_ascii_alphanumeric() || matches!(character, '.' | '-' | '_') { character } else { '_' })
-        .collect();
+    let safe_name: String =
+        file_name
+            .chars()
+            .map(|character| {
+                if character.is_ascii_alphanumeric() || matches!(character, '.' | '-' | '_') {
+                    character
+                } else {
+                    '_'
+                }
+            })
+            .collect();
     let mut response = bytes.into_response();
     response.headers_mut().insert(header::CONTENT_TYPE, HeaderValue::from_static("application/octet-stream"));
     if let Ok(value) = HeaderValue::from_str(&format!("attachment; filename=\"{safe_name}\"")) {
@@ -328,18 +334,16 @@ pub async fn stream_logs(
     )
     .await
     .map_err(AppError::from)?;
-    let stream = response
-        .bytes_stream()
-        .scan(Vec::<u8>::new(), |buffer, item| {
-            let event = match item {
-                Ok(chunk) => {
-                    let decoded = dbx_core::docker::decode_multiplexed_stream_chunk(buffer, &chunk);
-                    Event::default().event("chunk").data(String::from_utf8_lossy(&decoded).into_owned())
-                }
-                Err(error) => Event::default().event("error").data(error.to_string()),
-            };
-            std::future::ready(Some(Ok::<_, Infallible>(event)))
-        });
+    let stream = response.bytes_stream().scan(Vec::<u8>::new(), |buffer, item| {
+        let event = match item {
+            Ok(chunk) => {
+                let decoded = dbx_core::docker::decode_multiplexed_stream_chunk(buffer, &chunk);
+                Event::default().event("chunk").data(String::from_utf8_lossy(&decoded).into_owned())
+            }
+            Err(error) => Event::default().event("error").data(error.to_string()),
+        };
+        std::future::ready(Some(Ok::<_, Infallible>(event)))
+    });
     Ok(Sse::new(stream).keep_alive(KeepAlive::default()))
 }
 
@@ -348,10 +352,14 @@ pub async fn pull_image(
     Json(request): Json<PullImageRequest>,
 ) -> Result<Sse<impl futures::Stream<Item = Result<Event, Infallible>>>, AppError> {
     ensure_web_writes_enabled(&state)?;
-    let response =
-        dbx_core::docker::docker_pull_image_response_core(&state.app, &request.connection_id, &request.image, request.auth)
-            .await
-            .map_err(AppError::from)?;
+    let response = dbx_core::docker::docker_pull_image_response_core(
+        &state.app,
+        &request.connection_id,
+        &request.image,
+        request.auth,
+    )
+    .await
+    .map_err(AppError::from)?;
     let stream = response.bytes_stream().map(|item| {
         let event = match item {
             Ok(chunk) => Event::default().event("progress").data(String::from_utf8_lossy(&chunk).into_owned()),

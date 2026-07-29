@@ -1,18 +1,17 @@
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::OnceLock;
 
 use futures::StreamExt;
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, State};
-use tokio::sync::Mutex;
+use tokio::sync::{watch, Mutex};
 
 use crate::commands::connection::AppState;
 
-static DOCKER_STREAMS: OnceLock<Mutex<HashMap<String, Arc<AtomicBool>>>> = OnceLock::new();
+static DOCKER_STREAMS: OnceLock<Mutex<HashMap<String, watch::Sender<bool>>>> = OnceLock::new();
 
-fn docker_streams() -> &'static Mutex<HashMap<String, Arc<AtomicBool>>> {
+fn docker_streams() -> &'static Mutex<HashMap<String, watch::Sender<bool>>> {
     DOCKER_STREAMS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
@@ -187,21 +186,36 @@ pub async fn docker_start_logs(
     container_id: String,
     options: dbx_core::docker::DockerLogOptions,
 ) -> Result<(), String> {
-    let cancelled = Arc::new(AtomicBool::new(false));
-    docker_streams().lock().await.insert(session_id.clone(), cancelled.clone());
+    let (cancel_sender, mut cancelled) = watch::channel(false);
+    docker_streams().lock().await.insert(session_id.clone(), cancel_sender);
     let app_state = state.inner().clone();
     let task_session_id = session_id.clone();
     tauri::async_runtime::spawn(async move {
         let result = async {
-            let response =
-                dbx_core::docker::docker_container_logs_response_core(&app_state, &connection_id, &container_id, options)
-                    .await?;
+            let response = dbx_core::docker::docker_container_logs_response_core(
+                &app_state,
+                &connection_id,
+                &container_id,
+                options,
+            )
+            .await?;
             let mut stream = response.bytes_stream();
             let mut frame_buffer = Vec::new();
-            while let Some(chunk) = stream.next().await {
-                if cancelled.load(Ordering::Relaxed) {
-                    break;
-                }
+            loop {
+                let chunk = tokio::select! {
+                    changed = cancelled.changed() => {
+                        if changed.is_err() || *cancelled.borrow() {
+                            break;
+                        }
+                        continue;
+                    }
+                    chunk = stream.next() => {
+                        let Some(chunk) = chunk else {
+                            break;
+                        };
+                        chunk
+                    }
+                };
                 let chunk = chunk.map_err(|error| format!("Docker log stream failed: {error}"))?;
                 let decoded = dbx_core::docker::decode_multiplexed_stream_chunk(&mut frame_buffer, &chunk);
                 if !decoded.is_empty() {
@@ -222,12 +236,7 @@ pub async fn docker_start_logs(
         let error = result.err();
         let _ = app.emit(
             "docker-log-stream",
-            DockerStreamEvent {
-                session_id: task_session_id.clone(),
-                chunk: String::new(),
-                done: true,
-                error,
-            },
+            DockerStreamEvent { session_id: task_session_id.clone(), chunk: String::new(), done: true, error },
         );
         docker_streams().lock().await.remove(&task_session_id);
     });
@@ -243,8 +252,8 @@ pub async fn docker_pull_image(
     image: String,
     auth: Option<dbx_core::docker::DockerRegistryAuth>,
 ) -> Result<(), String> {
-    let cancelled = Arc::new(AtomicBool::new(false));
-    docker_streams().lock().await.insert(session_id.clone(), cancelled.clone());
+    let (cancel_sender, mut cancelled) = watch::channel(false);
+    docker_streams().lock().await.insert(session_id.clone(), cancel_sender);
     let app_state = state.inner().clone();
     let task_session_id = session_id.clone();
     tauri::async_runtime::spawn(async move {
@@ -252,10 +261,21 @@ pub async fn docker_pull_image(
             let response =
                 dbx_core::docker::docker_pull_image_response_core(&app_state, &connection_id, &image, auth).await?;
             let mut stream = response.bytes_stream();
-            while let Some(chunk) = stream.next().await {
-                if cancelled.load(Ordering::Relaxed) {
-                    break;
-                }
+            loop {
+                let chunk = tokio::select! {
+                    changed = cancelled.changed() => {
+                        if changed.is_err() || *cancelled.borrow() {
+                            break;
+                        }
+                        continue;
+                    }
+                    chunk = stream.next() => {
+                        let Some(chunk) = chunk else {
+                            break;
+                        };
+                        chunk
+                    }
+                };
                 let chunk = chunk.map_err(|error| format!("Docker image pull failed: {error}"))?;
                 let _ = app.emit(
                     "docker-image-pull",
@@ -273,12 +293,7 @@ pub async fn docker_pull_image(
         let error = result.err();
         let _ = app.emit(
             "docker-image-pull",
-            DockerStreamEvent {
-                session_id: task_session_id.clone(),
-                chunk: String::new(),
-                done: true,
-                error,
-            },
+            DockerStreamEvent { session_id: task_session_id.clone(), chunk: String::new(), done: true, error },
         );
         docker_streams().lock().await.remove(&task_session_id);
     });
@@ -289,7 +304,7 @@ pub async fn docker_pull_image(
 pub async fn docker_stop_stream(session_id: String) -> Result<bool, String> {
     let cancelled = docker_streams().lock().await.remove(&session_id);
     if let Some(cancelled) = cancelled {
-        cancelled.store(true, Ordering::Relaxed);
+        let _ = cancelled.send(true);
         Ok(true)
     } else {
         Ok(false)

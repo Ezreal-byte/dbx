@@ -78,6 +78,7 @@ const pullImageOpen = ref(false);
 const createVolumeOpen = ref(false);
 const createNetworkOpen = ref(false);
 const submitting = ref(false);
+const pulling = ref(false);
 const pullProgress = ref("");
 const createContainerDraft = ref({
   name: "",
@@ -99,6 +100,7 @@ const pendingLogText = ref("");
 const logPaused = ref(false);
 const logSearch = ref("");
 const logStream = ref<DockerStreamHandle>();
+const pullStream = ref<DockerStreamHandle>();
 const logError = ref("");
 const filePath = ref("/");
 const fileEntries = ref<DockerFileEntry[]>([]);
@@ -395,7 +397,7 @@ async function openCreateContainer() {
 
 async function pullImage() {
   if (!confirmProductionMutation(t("docker.pullImage"))) return;
-  submitting.value = true;
+  pulling.value = true;
   pullProgress.value = "";
   try {
     const auth: DockerRegistryAuth | undefined =
@@ -406,20 +408,34 @@ async function pullImage() {
             password: pullDraft.value.password,
           }
         : undefined;
-    await api.dockerPullImage(props.connection.id, pullDraft.value.image.trim(), auth, (event) => {
+    const stream = await api.dockerPullImage(props.connection.id, pullDraft.value.image.trim(), auth, (event) => {
       if (event.chunk) pullProgress.value = `${pullProgress.value}${event.chunk}`.slice(-20_000);
-      if (event.error) toast(event.error, 5000);
+      if (event.error) {
+        toast(event.error, 5000);
+        pulling.value = false;
+        pullStream.value = undefined;
+      }
       if (event.done && !event.error) {
+        pulling.value = false;
+        pullStream.value = undefined;
         toast(t("docker.imagePulled"), 2400);
         pullImageOpen.value = false;
         void loadResource("images");
       }
     });
+    if (pulling.value) pullStream.value = stream;
+    else await stream.stop().catch(() => undefined);
   } catch (cause: any) {
+    pulling.value = false;
     toast(cause?.message || String(cause), 5000);
-  } finally {
-    submitting.value = false;
   }
+}
+
+async function stopImagePull() {
+  const stream = pullStream.value;
+  pullStream.value = undefined;
+  pulling.value = false;
+  if (stream) await stream.stop().catch(() => undefined);
 }
 
 function downloadBytes(bytes: Uint8Array | string, fileName: string, type = "application/octet-stream") {
@@ -642,6 +658,9 @@ watch(detailTab, async (tab) => {
 });
 
 watch(resource, restartListSampling);
+watch(pullImageOpen, (open) => {
+  if (!open) void stopImagePull();
+});
 
 onMounted(async () => {
   document.addEventListener("visibilitychange", restartDetailSampling);
@@ -654,6 +673,7 @@ onUnmounted(() => {
   if (listStatsTimer) window.clearInterval(listStatsTimer);
   stopDetailSampling();
   void stopLogs();
+  void stopImagePull();
 });
 </script>
 
@@ -877,7 +897,7 @@ onUnmounted(() => {
       <DialogContent>
         <DialogHeader><DialogTitle>{{ t("docker.pullImage") }}</DialogTitle><DialogDescription>{{ t("docker.registryCredentialsTemporary") }}</DialogDescription></DialogHeader>
         <div class="space-y-3 py-2"><label class="docker-field"><span>{{ t("docker.image") }}</span><Input v-model="pullDraft.image" placeholder="nginx:latest" /></label><label class="docker-field"><span>Registry</span><Input v-model="pullDraft.serverAddress" placeholder="registry.example.com" /></label><div class="grid grid-cols-2 gap-3"><label class="docker-field"><span>{{ t("connection.username") }}</span><Input v-model="pullDraft.username" /></label><label class="docker-field"><span>{{ t("connection.password") }}</span><Input v-model="pullDraft.password" type="password" /></label></div><pre v-if="pullProgress" class="max-h-36 overflow-auto rounded bg-muted p-2 text-xs">{{ pullProgress }}</pre></div>
-        <DialogFooter><Button variant="outline" @click="pullImageOpen = false">{{ t("common.cancel") }}</Button><Button :disabled="submitting || !pullDraft.image.trim()" @click="pullImage">{{ t("docker.pull") }}</Button></DialogFooter>
+        <DialogFooter><Button variant="outline" @click="pullImageOpen = false">{{ t("common.cancel") }}</Button><Button :disabled="pulling || !pullDraft.image.trim()" @click="pullImage">{{ t("docker.pull") }}</Button></DialogFooter>
       </DialogContent>
     </Dialog>
 
