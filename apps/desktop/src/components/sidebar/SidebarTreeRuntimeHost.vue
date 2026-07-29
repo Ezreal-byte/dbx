@@ -580,6 +580,8 @@ async function toggle() {
         await connectionStore.loadMqTenants(node.connectionId);
       } else if (config?.db_type === "nacos") {
         await connectionStore.loadNacosNamespaces(node.connectionId);
+      } else if (config?.db_type === "docker") {
+        queryStore.openDockerWorkbench(node.connectionId);
       } else {
         await connectionStore.loadDatabases(node.connectionId);
       }
