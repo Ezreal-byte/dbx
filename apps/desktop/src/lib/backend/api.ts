@@ -353,6 +353,16 @@ export const nacosGetConfigHistory = forward("nacosGetConfigHistory");
 export const nacosRollbackConfig = forward("nacosRollbackConfig");
 export const nacosGetRNacosConsoleCaptcha = forward("nacosGetRNacosConsoleCaptcha");
 export const nacosLoginRNacosConsole = forward("nacosLoginRNacosConsole");
+
+// Docker
+export const dockerTestConnection = forward("dockerTestConnection");
+export const dockerListContainers = forward("dockerListContainers");
+export const dockerListImages = forward("dockerListImages");
+export const dockerListVolumes = forward("dockerListVolumes");
+export const dockerListNetworks = forward("dockerListNetworks");
+export const dockerContainerAction = forward("dockerContainerAction");
+export const dockerInspectContainer = forward("dockerInspectContainer");
+export const dockerContainerStats = forward("dockerContainerStats");
 export const nacosListServices = forward("nacosListServices");
 export const nacosListInstances = forward("nacosListInstances");
 export const nacosUpdateInstance = forward("nacosUpdateInstance");

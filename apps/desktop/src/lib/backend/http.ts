@@ -189,6 +189,7 @@ import type {
 } from "@/types/nacos";
 import { safeLocalStorageGet, safeLocalStorageSet } from "@/lib/backend/safeStorage";
 import { normalizeConnectionTestResult } from "@/lib/connection/connectionDatabaseInfo";
+import type { DockerConnectionInfo, DockerContainer, DockerContainerAction, DockerContainerStats, DockerImage, DockerNetwork, DockerVolume } from "@/types/docker";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -3254,6 +3255,38 @@ export async function loadSidebarLayout(): Promise<SidebarLayout | null> {
 
 export async function refreshConnections(): Promise<void> {
   // Web mode doesn't maintain persistent connection pools - no-op
+}
+
+export function dockerTestConnection(connectionId: string): Promise<DockerConnectionInfo> {
+  return post("/api/docker/test-connection", { connectionId });
+}
+
+export function dockerListContainers(connectionId: string, all = true): Promise<DockerContainer[]> {
+  return post("/api/docker/containers/list", { connectionId, all });
+}
+
+export function dockerListImages(connectionId: string): Promise<DockerImage[]> {
+  return post("/api/docker/images/list", { connectionId });
+}
+
+export function dockerListVolumes(connectionId: string): Promise<DockerVolume[]> {
+  return post("/api/docker/volumes/list", { connectionId });
+}
+
+export function dockerListNetworks(connectionId: string): Promise<DockerNetwork[]> {
+  return post("/api/docker/networks/list", { connectionId });
+}
+
+export async function dockerContainerAction(connectionId: string, containerId: string, action: DockerContainerAction): Promise<void> {
+  await post("/api/docker/containers/action", { connectionId, containerId, action });
+}
+
+export function dockerInspectContainer(connectionId: string, containerId: string): Promise<unknown> {
+  return post("/api/docker/containers/inspect", { connectionId, containerId });
+}
+
+export function dockerContainerStats(connectionId: string, containerIds: string[]): Promise<DockerContainerStats[]> {
+  return post("/api/docker/containers/stats", { connectionId, containerIds });
 }
 
 export * from "@/lib/backend/mq-http";

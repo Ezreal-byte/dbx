@@ -65,7 +65,8 @@ export type DatabaseType =
   | "influxdb"
   | "jdbc"
   | "mq"
-  | "nacos";
+  | "nacos"
+  | "docker";
 
 export interface SqlSnippet {
   id: string;
@@ -976,6 +977,7 @@ export interface QueryTab {
     | "mq"
     | "nacos"
     | "nacos-dashboard"
+    | "docker"
     | "objects"
     | "structure"
     | "users"

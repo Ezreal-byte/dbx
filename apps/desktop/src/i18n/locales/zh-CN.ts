@@ -488,6 +488,8 @@ export default withEnglishFallback({
     databaseCategoryTimeseries: "时序数据库",
     databaseCategoryMq: "消息队列",
     databaseCategoryRegistryConfig: "注册与配置",
+    databaseCategoryInfrastructure: "基础设施",
+    protocol: "协议",
     jdbcConnection: "JDBC 连接",
     iconView: "图标视图",
     listView: "列表视图",

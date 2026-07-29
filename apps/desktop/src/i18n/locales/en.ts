@@ -487,6 +487,8 @@ export default {
     databaseCategoryTimeseries: "Time series",
     databaseCategoryMq: "Message queues",
     databaseCategoryRegistryConfig: "Registry/Config",
+    databaseCategoryInfrastructure: "Infrastructure",
+    protocol: "Protocol",
     jdbcConnection: "JDBC connection",
     iconView: "Icon view",
     listView: "List view",

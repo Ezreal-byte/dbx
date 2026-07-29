@@ -18,6 +18,7 @@ import type { ConnectionConfig, ConnectionTestResult, DatabaseConnectionInfo, Da
 import type { InfluxDbExternalConfig, InfluxDbVersion } from "@/types/influxdb";
 import type { MqAdminConfig, MqAuth, MqSystemKind } from "@/types/mq";
 import type { NacosAdminConfig, NacosAuthConfig, NacosImplementation, NacosMetricsMode, NacosRNacosConsoleAuth, NacosVersionMode } from "@/types/nacos";
+import type { DockerAdminConfig, DockerProtocol } from "@/types/docker";
 import { CONNECTION_ATTEMPT_CANCELLED_MESSAGE, useConnectionStore } from "@/stores/connectionStore";
 import { useTunnelProfileStore } from "@/stores/tunnelProfileStore";
 import { detachTunnelProfileLayer, tunnelProfileReferenceLayer, tunnelProfileSummary } from "@/lib/connection/tunnelProfiles";
@@ -29,6 +30,7 @@ import { useToast } from "@/composables/useToast";
 import DatabaseIcon from "@/components/icons/DatabaseIcon.vue";
 import * as api from "@/lib/backend/api";
 import { isTauriRuntime } from "@/lib/backend/tauriRuntime";
+import { isWindows } from "@/lib/backend/platform";
 import { applyParsedConnectionUrl, normalizeMongoConnectionString, parseConnectionUrl } from "@/lib/connection/connectionUrl";
 import { buildOracleTnsConnectionString, normalizeOracleTnsAdminPath, parseOracleTnsConnectionString } from "@/lib/connection/oracleTnsConnection";
 import { parseConnectionDeepLink, type ConnectionDeepLinkDraft } from "@/lib/connection/connectionDeepLink";
@@ -102,7 +104,7 @@ import { gaussdbIdentifierQuoteStyle, setGaussdbIdentifierQuoteStyle, supportsGa
 import { normalizeStoredConnectionDatabase } from "@/lib/database/sqliteNamespace";
 
 type DbOption = { value: string; label: string };
-type DbCategoryKey = "sql" | "analytics" | "domestic" | "lightweight" | "document" | "graph_ai" | "timeseries" | "mq" | "registry_config";
+type DbCategoryKey = "sql" | "analytics" | "domestic" | "lightweight" | "document" | "graph_ai" | "timeseries" | "mq" | "registry_config" | "infrastructure";
 type DbCategory = { key: DbCategoryKey; title: string; options: DbOption[] };
 type DialogStep = "select" | "config";
 export type ConfigTab = "connection" | "advanced" | "tls" | "transport";
@@ -643,6 +645,17 @@ const nacosTlsSkipVerify = ref(false);
 const nacosMetricsMode = ref<NacosMetricsMode>("auto");
 const nacosMetricsUrl = ref("");
 const nacosPageSize = ref(20);
+const dockerProtocol = ref<DockerProtocol>("http");
+const dockerSocketPath = ref("/var/run/docker.sock");
+const dockerApiVersion = ref("auto");
+const dockerAllowInsecureRemoteHttp = ref(false);
+watch(dockerProtocol, (protocol, previous) => {
+  if (protocol === "https" && previous === "http" && form.value.port === 2375) {
+    form.value.port = 2376;
+  } else if (protocol === "http" && previous === "https" && form.value.port === 2376) {
+    form.value.port = 2375;
+  }
+});
 const nacosPrimaryAddressLabel = computed(() => {
   if (nacosImplementation.value === "rnacos") return t("connection.nacosPrimaryAddressRNacos");
   if (nacosVersionMode.value === "v2") return t("connection.nacosPrimaryAddressV2");
@@ -952,6 +965,7 @@ const driverProfiles: Record<
   rocketmq: { type: "mq", port: 9876, user: "", label: "Apache RocketMQ", icon: "rocketmq", host: "127.0.0.1" },
   rabbitmq: { type: "mq", port: 5672, user: "", label: "RabbitMQ", icon: "rabbitmq", host: "127.0.0.1" },
   nacos: { type: "nacos", port: 8848, user: "nacos", label: "Nacos", icon: "nacos", host: "127.0.0.1" },
+  docker: { type: "docker", port: 2375, user: "", label: "Docker", icon: "docker", host: "127.0.0.1" },
   iris: { type: "iris", port: 1972, user: "_SYSTEM", label: "IRIS", icon: "iris" },
   influxdb: { type: "influxdb", port: 8086, user: "", label: "InfluxDB", icon: "InfluxDB" },
   custom_mysql: {
@@ -1165,6 +1179,26 @@ function hydrateNacosFields(value: unknown) {
     return;
   }
   resetNacosFields(value as Partial<NacosAdminConfig>);
+}
+
+function resetDockerFields(config?: Partial<DockerAdminConfig>) {
+  dockerProtocol.value = config?.protocol || "http";
+  dockerSocketPath.value = config?.socketPath?.trim() || "/var/run/docker.sock";
+  dockerApiVersion.value = config?.apiVersion?.trim() || "auto";
+  dockerAllowInsecureRemoteHttp.value = !!config?.allowInsecureRemoteHttp;
+}
+
+function hydrateDockerFields(value: unknown) {
+  resetDockerFields(value && typeof value === "object" ? (value as Partial<DockerAdminConfig>) : undefined);
+}
+
+function buildDockerAdminConfig(): DockerAdminConfig {
+  return {
+    protocol: dockerProtocol.value,
+    socketPath: dockerSocketPath.value.trim() || "/var/run/docker.sock",
+    apiVersion: dockerApiVersion.value.trim() || "auto",
+    allowInsecureRemoteHttp: dockerAllowInsecureRemoteHttp.value || undefined,
+  };
 }
 
 const influxDbVersion = ref<InfluxDbVersion>("1");
@@ -1925,6 +1959,14 @@ function applyProfile(val: string, preserveConnectionFields = false) {
       form.value.connection_string = undefined;
       form.value.url_params = "";
     }
+    if (profile.type === "docker") {
+      resetDockerFields();
+      form.value.username = "";
+      form.value.password = "";
+      form.value.database = undefined;
+      form.value.connection_string = undefined;
+      form.value.url_params = "";
+    }
     if (profile.type === "influxdb") {
       resetInfluxDbFields();
       form.value.database = undefined;
@@ -2028,6 +2070,11 @@ watch(
       } else {
         resetNacosFields();
       }
+      if (config.db_type === "docker") {
+        hydrateDockerFields(config.external_config);
+      } else {
+        resetDockerFields();
+      }
       if (config.db_type === "influxdb") {
         hydrateInfluxDbFields(config.external_config);
       } else {
@@ -2070,6 +2117,7 @@ watch(
       customDriverName.value = "";
       resetMqFields();
       resetNacosFields();
+      resetDockerFields();
       resetInfluxDbFields();
       resetElasticsearchProxyFields();
       resetHiveKerberosFields();
@@ -2271,6 +2319,7 @@ const iconTypeMap: Record<string, string> = {
   rocketmq: "rocketmq",
   rabbitmq: "rabbitmq",
   nacos: "nacos",
+  docker: "docker",
   dm: "dm",
   h2: "h2",
   snowflake: "snowflake",
@@ -2370,6 +2419,7 @@ const dbOptions: DbOption[] = [
   { value: "rocketmq", label: "Apache RocketMQ" },
   { value: "rabbitmq", label: "RabbitMQ" },
   { value: "nacos", label: "Nacos" },
+  { value: "docker", label: "Docker" },
   { value: "influxdb", label: "InfluxDB" },
   { value: "iris", label: "IRIS" },
   { value: "jdbcx", label: "JDBCX" },
@@ -2428,6 +2478,11 @@ const dbCategoryDefinitions: Array<{
     key: "registry_config",
     titleKey: "connection.databaseCategoryRegistryConfig",
     optionValues: ["etcd", "zookeeper", "nacos"],
+  },
+  {
+    key: "infrastructure",
+    titleKey: "connection.databaseCategoryInfrastructure",
+    optionValues: ["docker"],
   },
 ];
 
@@ -2824,6 +2879,9 @@ const hasRequiredConnectionTarget = computed(() => {
   }
   if (form.value.db_type === "zookeeper") return !!(form.value.host || form.value.connection_string || connectionUrlInput.value.trim());
   if (form.value.db_type === "nacos") return !!nacosServerAddr.value.trim();
+  if (form.value.db_type === "docker") {
+    return dockerProtocol.value === "http" || dockerProtocol.value === "https" ? !!form.value.host.trim() && Number(form.value.port) > 0 : !!dockerSocketPath.value.trim();
+  }
   if (isCloudflareD1Connection(form.value)) return hasCloudflareD1Credentials(form.value);
   if (isH2FileMode.value) return !!(form.value.host.trim() || h2FilePathFromJdbcUrl(form.value.connection_string));
   return !!(form.value.host || (mongoUseUrl.value && form.value.connection_string) || (form.value.db_type === "jdbc" && form.value.connection_string) || connectionUrlInput.value.trim());
@@ -3220,6 +3278,14 @@ function connectionConfigForSubmit(id: string, generatedName = ""): ConnectionCo
     config.username = nacosAuthKind.value === "usernamePassword" ? nacosUsername.value.trim() : "";
     config.password = nacosAuthKind.value === "usernamePassword" ? nacosPassword.value : "";
     config.database = nacosConfig.namespace || undefined;
+    config.connection_string = undefined;
+    config.url_params = "";
+  } else if (config.db_type === "docker") {
+    config.external_config = buildDockerAdminConfig();
+    config.ssl = dockerProtocol.value === "https";
+    config.username = "";
+    config.password = "";
+    config.database = undefined;
     config.connection_string = undefined;
     config.url_params = "";
   } else if (config.db_type === "influxdb") {
@@ -5374,6 +5440,72 @@ function openExternalUrl(url: string) {
                     <span />
                     <p class="col-span-3 m-0 text-xs leading-5 text-muted-foreground">{{ t("connection.mqTokenSigningHint") }}</p>
                   </div>
+                </template>
+
+                <!-- Docker Engine API -->
+                <template v-else-if="form.db_type === 'docker'">
+                  <div class="grid grid-cols-4 items-center gap-4">
+                    <Label :class="connectionLabelClass">{{ t("connection.protocol") }}</Label>
+                    <Select v-model="dockerProtocol">
+                      <SelectTrigger class="col-span-3 h-9">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="http">HTTP</SelectItem>
+                        <SelectItem value="https">HTTPS</SelectItem>
+                        <SelectItem value="unix">Unix</SelectItem>
+                        <SelectItem value="unix-over-nc">Unix-Over-Nc</SelectItem>
+                        <SelectItem value="unix-over-nc-sudo">Unix-Over-Nc-Sudo</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div v-if="dockerProtocol === 'http' || dockerProtocol === 'https'" class="grid grid-cols-4 items-center gap-4">
+                    <Label :class="connectionLabelClass">{{ t("connection.host") }}</Label>
+                    <Input v-model="form.host" class="col-span-2" placeholder="127.0.0.1" />
+                    <Input v-model.number="form.port" type="number" min="1" max="65535" class="col-span-1" />
+                  </div>
+                  <template v-else>
+                    <div class="grid grid-cols-4 items-center gap-4">
+                      <Label :class="connectionLabelClass">Socket</Label>
+                      <Input v-model="dockerSocketPath" class="col-span-3 font-mono" placeholder="/var/run/docker.sock" />
+                    </div>
+                    <div v-if="dockerProtocol === 'unix' && isWindows()" class="grid grid-cols-4 items-start gap-4">
+                      <span />
+                      <p class="col-span-3 m-0 text-xs text-destructive">Unix socket is not available in the Windows desktop backend. Use HTTP/HTTPS or Unix-Over-Nc.</p>
+                    </div>
+                    <div v-if="dockerProtocol === 'unix-over-nc' || dockerProtocol === 'unix-over-nc-sudo'" class="grid grid-cols-4 items-start gap-4">
+                      <span />
+                      <p class="col-span-3 m-0 text-xs text-muted-foreground">
+                        Select exactly one existing SSH transport in the Transport tab. The remote host must provide <code>nc -U</code><span v-if="dockerProtocol === 'unix-over-nc-sudo'"> and passwordless <code>sudo -n</code></span
+                        >.
+                      </p>
+                    </div>
+                  </template>
+                  <div class="grid grid-cols-4 items-center gap-4">
+                    <Label :class="connectionLabelClass">API Version</Label>
+                    <Input v-model="dockerApiVersion" class="col-span-3 font-mono" placeholder="auto" />
+                  </div>
+                  <template v-if="dockerProtocol === 'https'">
+                    <div class="grid grid-cols-4 items-center gap-4">
+                      <Label :class="connectionLabelClass">CA</Label>
+                      <Input v-model="form.ca_cert_path" class="col-span-3" placeholder="/certs/ca.pem" />
+                    </div>
+                    <div class="grid grid-cols-4 items-center gap-4">
+                      <Label :class="connectionLabelClass">Client Cert</Label>
+                      <Input v-model="form.client_cert_path" class="col-span-3" placeholder="/certs/cert.pem" />
+                    </div>
+                    <div class="grid grid-cols-4 items-center gap-4">
+                      <Label :class="connectionLabelClass">Client Key</Label>
+                      <Input v-model="form.client_key_path" class="col-span-3" placeholder="/certs/key.pem" />
+                    </div>
+                  </template>
+                  <label v-if="dockerProtocol === 'http'" class="grid grid-cols-4 items-start gap-4">
+                    <span />
+                    <span class="col-span-3 flex items-start gap-2 text-xs text-muted-foreground">
+                      <input v-model="dockerAllowInsecureRemoteHttp" type="checkbox" class="mt-0.5" />
+                      Allow insecure non-local HTTP. Docker API access is root-equivalent and must only be enabled on a trusted network.
+                    </span>
+                  </label>
                 </template>
 
                 <!-- Nacos: profile-aware endpoint, namespace and auth -->
