@@ -3358,10 +3358,6 @@ async function dockerPostBytes(url: string, body: unknown): Promise<Uint8Array> 
   return new Uint8Array(await response.arrayBuffer());
 }
 
-export function dockerDownloadContainerFile(connectionId: string, containerId: string, path: string): Promise<Uint8Array> {
-  return dockerPostBytes("/api/docker/containers/files/download", { connectionId, containerId, path });
-}
-
 export function dockerExportImage(connectionId: string, imageId: string): Promise<Uint8Array> {
   return dockerPostBytes("/api/docker/images/export", { connectionId, imageId });
 }
@@ -3413,6 +3409,10 @@ async function startDockerHttpStream(request: (signal: AbortSignal) => Promise<R
   const sessionId = dockerStreamSessionId();
   const controller = new AbortController();
   const response = await request(controller.signal);
+  if (!response.ok) {
+    const message = await response.text();
+    throw new Error(message || `Docker stream request failed with HTTP ${response.status}`);
+  }
   void consumeDockerEventStream(response, sessionId, controller.signal, onEvent).catch((error) => {
     if (!controller.signal.aborted) {
       onEvent({ sessionId, chunk: "", done: true, error: error instanceof Error ? error.message : String(error) });
@@ -3449,6 +3449,7 @@ export function dockerPullImage(connectionId: string, image: string, auth: Docke
 
 export function dockerPushImage(connectionId: string, sourceImageId: string, targetReference: string, auth: DockerRegistryAuth | undefined, onEvent: (event: DockerTransferProgress) => void): Promise<DockerStreamHandle> {
   let transferred = 0;
+  let pending = "";
   return startDockerHttpStream(
     (signal) =>
       fetch(apiUrl("/api/docker/images/push"), {
@@ -3459,8 +3460,13 @@ export function dockerPushImage(connectionId: string, sourceImageId: string, tar
       }),
     (event) => {
       transferred += new TextEncoder().encode(event.chunk || "").byteLength;
+      const buffered = `${pending}${event.chunk || ""}`.replace(/\r\n/g, "\n");
+      const lines = buffered.split("\n");
+      const remainder = lines.pop() ?? "";
+      pending = event.done ? "" : remainder;
+      if (event.done && remainder) lines.push(remainder);
       let streamError = event.error || undefined;
-      for (const line of (event.chunk || "").split(/\r?\n/).filter(Boolean)) {
+      for (const line of lines.filter(Boolean)) {
         try {
           const value = JSON.parse(line);
           streamError ||= value.error || value.errorDetail?.message;
@@ -3475,7 +3481,7 @@ export function dockerPushImage(connectionId: string, sourceImageId: string, tar
         image: targetReference,
         status: streamError ? "error" : event.done ? "done" : "running",
         bytesCompleted: transferred,
-        message: event.chunk,
+        message: lines.join("\n"),
         error: streamError,
       });
     },
@@ -3558,67 +3564,6 @@ export async function dockerStartImageExport(connectionId: string, imageId: stri
           error: error instanceof Error ? error.message : String(error),
         });
       }
-    }
-  })();
-  return { sessionId, stop: async () => controller.abort() };
-}
-
-export async function dockerLoadImage(connectionId: string, source: string | File, onEvent: (event: DockerTransferProgress) => void): Promise<DockerStreamHandle> {
-  if (!(source instanceof File)) throw new Error("Web image loading requires a local archive");
-  const sessionId = dockerStreamSessionId();
-  const controller = new AbortController();
-  let offset = 0;
-  onEvent({ sessionId, kind: "load", direction: "upload", image: source.name, status: "running", bytesCompleted: 0, bytesTotal: source.size });
-  const body = new ReadableStream<Uint8Array>({
-    async pull(target) {
-      if (controller.signal.aborted) {
-        target.error(new DOMException("Cancelled", "AbortError"));
-        return;
-      }
-      if (offset >= source.size) {
-        target.close();
-        return;
-      }
-      const nextOffset = Math.min(source.size, offset + 256 * 1024);
-      const chunk = new Uint8Array(await source.slice(offset, nextOffset).arrayBuffer());
-      offset = nextOffset;
-      target.enqueue(chunk);
-      onEvent({ sessionId, kind: "load", direction: "upload", image: source.name, status: "running", bytesCompleted: offset, bytesTotal: source.size });
-    },
-  });
-  void (async () => {
-    try {
-      const response = await fetch(apiUrl(`/api/docker/images/load?${qs({ connectionId })}`), {
-        method: "POST",
-        headers: { "Content-Type": "application/x-tar" },
-        body,
-        signal: controller.signal,
-        duplex: "half",
-      } as RequestInit & { duplex: "half" });
-      if (!response.ok) throw new Error(await response.text());
-      const responseText = await response.text();
-      let streamError: string | undefined;
-      for (const line of responseText.split(/\r?\n/).filter(Boolean)) {
-        try {
-          const value = JSON.parse(line);
-          streamError ||= value.error || value.errorDetail?.message;
-        } catch {
-          // The daemon can return an empty success response.
-        }
-      }
-      if (streamError) throw new Error(streamError);
-      onEvent({ sessionId, kind: "load", direction: "upload", image: source.name, status: "done", bytesCompleted: source.size, bytesTotal: source.size });
-    } catch (error) {
-      onEvent({
-        sessionId,
-        kind: "load",
-        direction: "upload",
-        image: source.name,
-        status: controller.signal.aborted ? "cancelled" : "error",
-        bytesCompleted: offset,
-        bytesTotal: source.size,
-        error: controller.signal.aborted ? undefined : error instanceof Error ? error.message : String(error),
-      });
     }
   })();
   return { sessionId, stop: async () => controller.abort() };

@@ -74,6 +74,8 @@ const imageActionInFlight = ref<Record<string, string | undefined>>({});
 type TransferTask = DockerTransferProgress & { startedAt: number; handle?: DockerStreamHandle };
 const transfers = ref<TransferTask[]>([]);
 const cancelledTransferIds = new Set<string>();
+const transferJsonBuffers = new Map<string, string>();
+const transferLayerStates = new Map<string, Map<string, boolean>>();
 const transferOpen = ref(false);
 const pushImageOpen = ref(false);
 const pushDraft = ref({ sourceImageId: "", targetReference: "", serverAddress: "", username: "", password: "" });
@@ -81,7 +83,6 @@ const autoRefresh = ref(true);
 const refreshCountdown = ref(10);
 const lastRefreshAt = ref<Date>();
 const refreshInFlight = ref(false);
-const imageFileInput = ref<HTMLInputElement>();
 const columnWidths = ref<Record<ResourceKind, number[]>>({
   containers: [230, 110, 190, 150, 80, 160, 95, 260],
   images: [280, 140, 110, 180, 260],
@@ -348,13 +349,19 @@ function transferPercent(task: TransferTask): number | undefined {
 
 function dockerProgressFromChunk(sessionId: string, kind: "pull" | "push", image: string, chunk: string, done: boolean, error?: string | null): DockerTransferProgress {
   const current = transfers.value.find((task) => task.sessionId === sessionId);
-  const layers = new Map<string, boolean>();
+  const buffered = `${transferJsonBuffers.get(sessionId) || ""}${chunk}`.replace(/\r\n/g, "\n");
+  const lines = buffered.split("\n");
+  const remainder = lines.pop() ?? "";
+  transferJsonBuffers.set(sessionId, done ? "" : remainder);
+  if (done && remainder) lines.push(remainder);
+  const layers = transferLayerStates.get(sessionId) ?? new Map<string, boolean>();
+  transferLayerStates.set(sessionId, layers);
   let bytesCompleted = current?.bytesCompleted ?? 0;
   let bytesTotal = current?.bytesTotal ?? undefined;
   let layersCompleted = current?.layersCompleted ?? 0;
   let layersTotal = current?.layersTotal ?? 0;
   let streamError = error || undefined;
-  for (const line of chunk.split(/\r?\n/).filter(Boolean)) {
+  for (const line of lines.filter(Boolean)) {
     try {
       const value = JSON.parse(line);
       streamError ||= value.error || value.errorDetail?.message;
@@ -371,7 +378,7 @@ function dockerProgressFromChunk(sessionId: string, kind: "pull" | "push", image
     layersTotal = Math.max(layersTotal || 0, layers.size);
     layersCompleted = Math.max(layersCompleted || 0, [...layers.values()].filter(Boolean).length);
   }
-  return {
+  const result: DockerTransferProgress = {
     sessionId,
     kind,
     direction: kind === "push" ? "upload" : "download",
@@ -384,6 +391,11 @@ function dockerProgressFromChunk(sessionId: string, kind: "pull" | "push", image
     message: chunk,
     error: streamError,
   };
+  if (result.status !== "running") {
+    transferJsonBuffers.delete(sessionId);
+    transferLayerStates.delete(sessionId);
+  }
+  return result;
 }
 
 async function loadEngineInfo() {
@@ -445,7 +457,8 @@ async function selectResource(kind: ResourceKind) {
 
 function toggleProject(project: string) {
   const next = new Set(expandedProjects.value);
-  next.has(project) ? next.delete(project) : next.add(project);
+  if (next.has(project)) next.delete(project);
+  else next.add(project);
   expandedProjects.value = next;
 }
 
@@ -707,6 +720,7 @@ async function pullImage() {
             password: pullDraft.value.password,
           }
         : undefined;
+    pullDraft.value.password = "";
     let startedStream: DockerStreamHandle | undefined;
     const stream = await api.dockerPullImage(props.connection.id, pullDraft.value.image.trim(), auth, (event) => {
       if (event.chunk) pullProgress.value = `${pullProgress.value}${event.chunk}`.slice(-20_000);
@@ -822,6 +836,7 @@ async function pushImage() {
           password: pushDraft.value.password,
         }
       : undefined;
+  pushDraft.value.password = "";
   try {
     let startedStream: DockerStreamHandle | undefined;
     const stream = await api.dockerPushImage(props.connection.id, pushDraft.value.sourceImageId, targetReference, auth, (progress) => {
@@ -839,50 +854,6 @@ async function pushImage() {
   } catch (cause: any) {
     toast(cause?.message || String(cause), 5000);
   }
-}
-
-async function startImageLoad(source: string | File) {
-  if (!(await confirmProductionMutation(t("docker.loadImage")))) return;
-  transferOpen.value = true;
-  try {
-    let startedStream: DockerStreamHandle | undefined;
-    const stream = await api.dockerLoadImage(props.connection.id, source, (progress) => {
-      upsertTransfer(progress, startedStream);
-      if (progress.status === "done") {
-        toast(t("docker.imageLoaded"), 2400);
-        query.value = "";
-        void loadResource("images");
-      } else if (progress.status === "error") {
-        toast(progress.error || t("docker.transferFailed"), 5000);
-      }
-    });
-    startedStream = stream;
-    const task = transfers.value.find((value) => value.sessionId === stream.sessionId);
-    if (task) upsertTransfer(task, stream);
-  } catch (cause: any) {
-    toast(cause?.message || String(cause), 5000);
-  }
-}
-
-async function openImageArchive() {
-  if (isReadOnly.value) return;
-  if (isTauriRuntime()) {
-    const { open } = await import("@tauri-apps/plugin-dialog");
-    const source = await open({
-      multiple: false,
-      filters: [{ name: "Docker image archive", extensions: ["tar"] }],
-    });
-    if (typeof source === "string") await startImageLoad(source);
-    return;
-  }
-  imageFileInput.value?.click();
-}
-
-function onImageArchiveSelected(event: Event) {
-  const input = event.target as HTMLInputElement;
-  const file = input.files?.[0];
-  input.value = "";
-  if (file) void startImageLoad(file);
 }
 
 async function cancelTransfer(task: TransferTask) {
@@ -1355,7 +1326,6 @@ onUnmounted(() => {
           </template>
           <template v-else-if="resource === 'images'">
             <Button :disabled="isReadOnly" @click="pullImageOpen = true"><Download />{{ t("docker.pullImage") }}</Button>
-            <Button variant="outline" :disabled="isReadOnly" @click="openImageArchive"><Upload />{{ t("docker.loadImage") }}</Button>
           </template>
           <Button v-else-if="resource === 'volumes'" :disabled="isReadOnly" @click="createVolumeOpen = true"><Plus />{{ t("docker.createVolume") }}</Button>
           <Button v-else :disabled="isReadOnly" @click="createNetworkOpen = true"><Plus />{{ t("docker.createNetwork") }}</Button>
@@ -1652,8 +1622,6 @@ onUnmounted(() => {
         </div>
       </template>
     </main>
-
-    <input ref="imageFileInput" class="hidden" type="file" accept=".tar,application/x-tar,application/x-gtar" @change="onImageArchiveSelected" />
 
     <Dialog v-model:open="createContainerOpen">
       <DialogContent class="max-h-[88vh] max-w-3xl overflow-auto">

@@ -206,7 +206,7 @@ export interface DockerStreamHandle {
 
 export interface DockerTransferProgress {
   sessionId: string;
-  kind: "pull" | "push" | "export" | "load";
+  kind: "pull" | "push" | "export";
   direction: "download" | "upload";
   image: string;
   status: "running" | "done" | "error" | "cancelled";

@@ -117,12 +117,6 @@ pub(crate) struct LogStreamQuery {
     timestamps: Option<bool>,
 }
 
-#[derive(serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct LoadImageQuery {
-    connection_id: String,
-}
-
 fn default_true() -> bool {
     true
 }
@@ -311,22 +305,6 @@ pub async fn preview_container_file(
     .map_err(AppError::from)
 }
 
-pub async fn download_container_file(
-    State(state): State<Arc<WebState>>,
-    Json(request): Json<FileRequest>,
-) -> Result<Response, AppError> {
-    let bytes = dbx_core::docker::docker_download_container_file_core(
-        &state.app,
-        &request.connection_id,
-        &request.container_id,
-        &request.path,
-    )
-    .await
-    .map_err(AppError::from)?;
-    let file_name = request.path.rsplit('/').next().filter(|name| !name.is_empty()).unwrap_or("container-file");
-    Ok(binary_download_response(bytes, file_name))
-}
-
 pub async fn export_image(
     State(state): State<Arc<WebState>>,
     Json(request): Json<ImageRequest>,
@@ -347,26 +325,6 @@ pub async fn export_image(
         }
     }
     Ok(response)
-}
-
-fn binary_download_response(bytes: Vec<u8>, file_name: &str) -> Response {
-    let safe_name: String =
-        file_name
-            .chars()
-            .map(|character| {
-                if character.is_ascii_alphanumeric() || matches!(character, '.' | '-' | '_') {
-                    character
-                } else {
-                    '_'
-                }
-            })
-            .collect();
-    let mut response = bytes.into_response();
-    response.headers_mut().insert(header::CONTENT_TYPE, HeaderValue::from_static("application/octet-stream"));
-    if let Ok(value) = HeaderValue::from_str(&format!("attachment; filename=\"{safe_name}\"")) {
-        response.headers_mut().insert(header::CONTENT_DISPOSITION, value);
-    }
-    response
 }
 
 pub async fn stream_logs(
@@ -442,24 +400,6 @@ pub async fn push_image(
         Ok::<_, Infallible>(event)
     });
     Ok(Sse::new(stream).keep_alive(KeepAlive::default()))
-}
-
-pub async fn load_image(
-    State(state): State<Arc<WebState>>,
-    Query(query): Query<LoadImageQuery>,
-    body: Body,
-) -> Result<Response, AppError> {
-    ensure_web_writes_enabled(&state)?;
-    let upstream = dbx_core::docker::docker_load_image_response_core(
-        &state.app,
-        &query.connection_id,
-        reqwest::Body::wrap_stream(body.into_data_stream()),
-    )
-    .await
-    .map_err(AppError::from)?;
-    let mut response = Body::from_stream(upstream.bytes_stream()).into_response();
-    response.headers_mut().insert(header::CONTENT_TYPE, HeaderValue::from_static("application/json"));
-    Ok(response)
 }
 
 pub async fn inspect_container(

@@ -1,4 +1,3 @@
-use std::io::{Cursor, Read};
 use std::path::Path;
 
 use base64::Engine;
@@ -499,16 +498,6 @@ pub async fn docker_push_image_response_core(
         .await
 }
 
-pub async fn docker_load_image_response_core(
-    state: &AppState,
-    connection_id: &str,
-    body: reqwest::Body,
-) -> Result<reqwest::Response, String> {
-    let (connection, client, _) = connection_and_client(state, connection_id).await?;
-    ensure_writable(&connection, "image load")?;
-    client.request_body_stream(Method::POST, "/images/load?quiet=false", body, "application/x-tar").await
-}
-
 pub async fn docker_container_logs_response_core(
     state: &AppState,
     connection_id: &str,
@@ -680,31 +669,6 @@ pub async fn docker_preview_container_file_core(
         truncated,
         binary,
     })
-}
-
-pub async fn docker_download_container_file_core(
-    state: &AppState,
-    connection_id: &str,
-    container_id: &str,
-    path: &str,
-) -> Result<Vec<u8>, String> {
-    let (_, client, _) = connection_and_client(state, connection_id).await?;
-    let path = validate_container_path(path)?;
-    let archive = client
-        .get_bytes(&format!("/containers/{}/archive?path={}", encoded_id(container_id), encoded_id(&path)))
-        .await?;
-    let mut tar = tar::Archive::new(Cursor::new(archive));
-    let mut entries = tar.entries().map_err(|error| format!("Docker returned an invalid file archive: {error}"))?;
-    let mut entry = entries
-        .next()
-        .ok_or_else(|| "Docker file archive was empty".to_string())?
-        .map_err(|error| format!("Failed to read Docker file archive: {error}"))?;
-    if !entry.header().entry_type().is_file() {
-        return Err("Only regular container files can be downloaded".to_string());
-    }
-    let mut bytes = Vec::new();
-    entry.read_to_end(&mut bytes).map_err(|error| format!("Failed to extract Docker file: {error}"))?;
-    Ok(bytes)
 }
 
 fn audit_result(connection_id: &str, resource_id: &str, action: &str, result: &Result<(), String>) {

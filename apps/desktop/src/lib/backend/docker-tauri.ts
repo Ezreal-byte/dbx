@@ -93,10 +93,6 @@ export function dockerPreviewContainerFile(connectionId: string, containerId: st
   return invoke("docker_preview_container_file", { connectionId, containerId, path });
 }
 
-export async function dockerDownloadContainerFile(connectionId: string, containerId: string, path: string): Promise<Uint8Array> {
-  return new Uint8Array(await invoke<number[]>("docker_download_container_file", { connectionId, containerId, path }));
-}
-
 export async function dockerExportImage(connectionId: string, imageId: string): Promise<Uint8Array> {
   return new Uint8Array(await invoke<number[]>("docker_export_image", { connectionId, imageId }));
 }
@@ -187,35 +183,6 @@ export async function dockerStartImageExport(connectionId: string, imageId: stri
   });
   try {
     await invoke("docker_start_image_export", { connectionId, imageId, displayName: fileName, destinationPath, sessionId });
-  } catch (error) {
-    unlisten();
-    throw error;
-  }
-  return {
-    sessionId,
-    stop: async () => {
-      if (stopped) return;
-      stopped = true;
-      unlisten();
-      await invoke("docker_stop_transfer", { sessionId });
-    },
-  };
-}
-
-export async function dockerLoadImage(connectionId: string, source: string | File, onEvent: (event: DockerTransferProgress) => void): Promise<DockerStreamHandle> {
-  if (typeof source !== "string") throw new Error("Desktop image loading requires a local file path");
-  const sessionId = streamSessionId();
-  let stopped = false;
-  const unlisten = await listen<DockerTransferProgress>("docker-transfer-progress", (event) => {
-    if (event.payload.sessionId !== sessionId) return;
-    onEvent(event.payload);
-    if (event.payload.status !== "running") {
-      stopped = true;
-      unlisten();
-    }
-  });
-  try {
-    await invoke("docker_load_image_from_path", { connectionId, sourcePath: source, sessionId });
   } catch (error) {
     unlisten();
     throw error;

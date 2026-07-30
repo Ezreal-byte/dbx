@@ -62,14 +62,14 @@ The workbench provides:
 
 - Compose-grouped and standalone container lists, create/delete, start, pause, resume, restart, and stop.
 - Container overview, a bounded live log stream, session-only 15-minute CPU/memory trends, and read-only file browsing.
-- Image pull/delete/export, including optional per-request private Registry credentials.
+- Image pull/push/delete/export, including optional per-request private Registry credentials.
 - Volume and network creation.
 
 Registry credentials are sent only in the Docker `X-Registry-Auth` request header. DBX does not save them or include them in application logs.
 
 The file browser runs a fixed read-only `/bin/sh` script with the selected path passed as a separate argument. It does not accept arbitrary commands and does not provide upload, edit, or delete operations. Distroless and scratch containers without `/bin/sh`, `stat`, or `head` show an unsupported-capability error. Text preview is limited to 2 MiB.
 
-Docker image archives and container file downloads can be large. The Web image export route streams the archive from the daemon, while Tauri streams directly to the selected local file without routing the archive through frontend IPC.
+Docker image archives can be large. The Web image export route streams the archive from the daemon, while Tauri streams directly to the selected local file without routing the archive through frontend IPC. Importing offline image archives is not included in this version.
 
 ## Compose editor
 

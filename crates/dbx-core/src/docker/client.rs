@@ -105,30 +105,6 @@ impl DockerClient {
         let bytes = response.bytes().await.unwrap_or_default();
         Err(docker_api_error(status, &bytes))
     }
-
-    pub async fn request_body_stream(
-        &self,
-        method: Method,
-        path: &str,
-        body: reqwest::Body,
-        content_type: &str,
-    ) -> Result<reqwest::Response, String> {
-        let url = self.endpoint(path);
-        let response = self
-            .stream_client
-            .request(method, &url)
-            .header(reqwest::header::CONTENT_TYPE, content_type)
-            .body(body)
-            .send()
-            .await
-            .map_err(|error| docker_transport_error(&url, error))?;
-        if response.status().is_success() {
-            return Ok(response);
-        }
-        let status = response.status();
-        let bytes = response.bytes().await.unwrap_or_default();
-        Err(docker_api_error(status, &bytes))
-    }
 }
 
 pub(crate) fn encoded_id(id: &str) -> String {
