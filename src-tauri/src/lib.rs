@@ -1827,7 +1827,6 @@ pub fn run() {
             commands::docker_cmd::docker_start_image_export,
             commands::docker_cmd::docker_stop_transfer,
             commands::docker_cmd::docker_remove_image,
-            commands::docker_cmd::docker_export_image,
             commands::docker_cmd::docker_export_image_to_path,
             commands::docker_cmd::docker_create_volume,
             commands::docker_cmd::docker_create_network,

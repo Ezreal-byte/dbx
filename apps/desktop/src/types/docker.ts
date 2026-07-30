@@ -204,6 +204,11 @@ export interface DockerStreamHandle {
   stop: () => Promise<void>;
 }
 
+export interface DockerStreamStartOptions {
+  sessionId?: string;
+  signal?: AbortSignal;
+}
+
 export interface DockerTransferProgress {
   sessionId: string;
   kind: "pull" | "push" | "export";

@@ -74,10 +74,6 @@ impl DockerClient {
         request_empty_body_with(&self.client, Method::DELETE, &self.endpoint(path), None, None).await
     }
 
-    pub async fn get_bytes(&self, path: &str) -> Result<Vec<u8>, String> {
-        request_bytes_with(&self.client, Method::GET, &self.endpoint(path), None).await
-    }
-
     pub async fn post_bytes(&self, path: &str, body: Value) -> Result<Vec<u8>, String> {
         request_bytes_with(&self.client, Method::POST, &self.endpoint(path), Some(body)).await
     }

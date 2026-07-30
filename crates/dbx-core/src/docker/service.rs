@@ -193,6 +193,29 @@ pub async fn docker_create_container_core(
 ) -> Result<DockerCreateContainerResult, String> {
     let (connection, client, _) = connection_and_client(state, connection_id).await?;
     ensure_writable(&connection, "container creation")?;
+    let (name, body) = prepare_create_container_request(&request)?;
+    let value: Value = client.post_json(&format!("/containers/create?name={}", encoded_id(&name)), body).await?;
+    let id = value.get("Id").and_then(Value::as_str).unwrap_or_default().to_string();
+    if id.is_empty() {
+        return Err("Docker created the container but did not return its ID".to_string());
+    }
+    let warnings = value
+        .get("Warnings")
+        .and_then(Value::as_array)
+        .map(|values| values.iter().filter_map(Value::as_str).map(str::to_string).collect())
+        .unwrap_or_default();
+    if request.start {
+        client.post_empty(&format!("/containers/{}/start", encoded_id(&id))).await?;
+    }
+    log::info!("Docker container created: connection_id={} container_id={}", connection_id, id);
+    Ok(DockerCreateContainerResult { id, warnings })
+}
+
+pub(crate) fn validate_create_container_request(request: &DockerCreateContainerRequest) -> Result<(), String> {
+    prepare_create_container_request(request).map(|_| ())
+}
+
+fn prepare_create_container_request(request: &DockerCreateContainerRequest) -> Result<(String, Value), String> {
     let name = validate_resource_name(&request.name, "Container name")?;
     let image = validate_resource_name(&request.image, "Container image")?;
     if request.environment.iter().any(|value| value.contains('\0')) {
@@ -248,36 +271,28 @@ pub async fn docker_create_container_core(
         "on-failure" => "on-failure",
         _ => return Err("Restart policy must be no, always, unless-stopped, or on-failure".to_string()),
     };
+    let network = request
+        .network
+        .as_deref()
+        .filter(|name| !name.trim().is_empty())
+        .map(|name| validate_resource_name(name, "Container network"))
+        .transpose()?;
     let body = serde_json::json!({
         "Image": image,
-        "Cmd": request.command,
-        "Env": request.environment,
-        "Labels": request.labels,
+        "Cmd": &request.command,
+        "Env": &request.environment,
+        "Labels": &request.labels,
         "ExposedPorts": exposed_ports,
         "HostConfig": {
             "PortBindings": port_bindings,
             "Mounts": mounts,
             "RestartPolicy": {"Name": restart_name}
         },
-        "NetworkingConfig": request.network.as_ref().filter(|name| !name.trim().is_empty()).map(|name| {
-            serde_json::json!({"EndpointsConfig": {name.trim(): {}}})
+        "NetworkingConfig": network.as_ref().map(|name| {
+            serde_json::json!({"EndpointsConfig": {name: {}}})
         })
     });
-    let value: Value = client.post_json(&format!("/containers/create?name={}", encoded_id(&name)), body).await?;
-    let id = value.get("Id").and_then(Value::as_str).unwrap_or_default().to_string();
-    if id.is_empty() {
-        return Err("Docker created the container but did not return its ID".to_string());
-    }
-    let warnings = value
-        .get("Warnings")
-        .and_then(Value::as_array)
-        .map(|values| values.iter().filter_map(Value::as_str).map(str::to_string).collect())
-        .unwrap_or_default();
-    if request.start {
-        client.post_empty(&format!("/containers/{}/start", encoded_id(&id))).await?;
-    }
-    log::info!("Docker container created: connection_id={} container_id={}", connection_id, id);
-    Ok(DockerCreateContainerResult { id, warnings })
+    Ok((name, body))
 }
 
 pub async fn docker_remove_container_core(
@@ -290,6 +305,28 @@ pub async fn docker_remove_container_core(
     let result = client.delete_empty(&format!("/containers/{}?force=false&v=false", encoded_id(container_id))).await;
     audit_result(connection_id, container_id, "remove-container", &result);
     result
+}
+
+pub(crate) async fn docker_rename_container_core(
+    state: &AppState,
+    connection_id: &str,
+    container_id: &str,
+    name: &str,
+) -> Result<(), String> {
+    let (connection, client, _) = connection_and_client(state, connection_id).await?;
+    ensure_writable(&connection, "container rename")?;
+    let name = validate_resource_name(name, "Container name")?;
+    client.post_empty(&format!("/containers/{}/rename?name={}", encoded_id(container_id), encoded_id(&name))).await
+}
+
+pub(crate) async fn docker_remove_network_core(
+    state: &AppState,
+    connection_id: &str,
+    network_id: &str,
+) -> Result<(), String> {
+    let (connection, client, _) = connection_and_client(state, connection_id).await?;
+    ensure_writable(&connection, "network deletion")?;
+    client.delete_empty(&format!("/networks/{}", encoded_id(network_id))).await
 }
 
 pub async fn docker_remove_image_core(state: &AppState, connection_id: &str, image_id: &str) -> Result<(), String> {
@@ -377,15 +414,6 @@ pub async fn docker_create_network_core(
     };
     log::info!("Docker network created: connection_id={} network_id={}", connection_id, result.id);
     Ok(result)
-}
-
-pub async fn docker_export_image_bytes_core(
-    state: &AppState,
-    connection_id: &str,
-    image_id: &str,
-) -> Result<Vec<u8>, String> {
-    let (_, client, _) = connection_and_client(state, connection_id).await?;
-    client.get_bytes(&format!("/images/{}/get", encoded_id(image_id))).await
 }
 
 pub async fn docker_export_image_response_core(

@@ -21,6 +21,7 @@ import type {
   DockerRegistryAuth,
   DockerStreamEvent,
   DockerStreamHandle,
+  DockerStreamStartOptions,
   DockerTransferProgress,
   DockerVolume,
 } from "@/types/docker";
@@ -93,10 +94,6 @@ export function dockerPreviewContainerFile(connectionId: string, containerId: st
   return invoke("docker_preview_container_file", { connectionId, containerId, path });
 }
 
-export async function dockerExportImage(connectionId: string, imageId: string): Promise<Uint8Array> {
-  return new Uint8Array(await invoke<number[]>("docker_export_image", { connectionId, imageId }));
-}
-
 export function dockerExportImageToPath(connectionId: string, imageId: string, destinationPath: string): Promise<number> {
   return invoke("docker_export_image_to_path", { connectionId, imageId, destinationPath });
 }
@@ -105,40 +102,67 @@ function streamSessionId(): string {
   return globalThis.crypto?.randomUUID?.() ?? `docker-${Date.now()}-${Math.random().toString(16).slice(2)}`;
 }
 
-async function startTauriStream(eventName: "docker-log-stream" | "docker-image-pull", command: "docker_start_logs" | "docker_pull_image", payload: Record<string, unknown>, onEvent: (event: DockerStreamEvent) => void): Promise<DockerStreamHandle> {
-  const sessionId = streamSessionId();
-  let stopped = false;
-  const unlisten = await listen<DockerStreamEvent>(eventName, (event) => {
+async function startTauriStream(eventName: "docker-log-stream" | "docker-image-pull", command: "docker_start_logs" | "docker_pull_image", payload: Record<string, unknown>, onEvent: (event: DockerStreamEvent) => void, options: DockerStreamStartOptions = {}): Promise<DockerStreamHandle> {
+  const sessionId = options.sessionId || streamSessionId();
+  let cancelled = false;
+  let completed = false;
+  let backendStarted = false;
+  let backendStopSent = false;
+  let unlisten: (() => void) | undefined;
+  const cleanup = () => {
+    unlisten?.();
+    unlisten = undefined;
+    options.signal?.removeEventListener("abort", abortFromCaller);
+  };
+  const stopBackend = async () => {
+    if (!backendStarted || backendStopSent) return;
+    backendStopSent = true;
+    await invoke("docker_stop_stream", { sessionId });
+  };
+  const handle: DockerStreamHandle = {
+    sessionId,
+    stop: async () => {
+      if (completed || cancelled) return;
+      cancelled = true;
+      cleanup();
+      await stopBackend();
+    },
+  };
+  const abortFromCaller = () => void handle.stop().catch(() => undefined);
+  if (options.signal?.aborted) {
+    cancelled = true;
+    return handle;
+  }
+  options.signal?.addEventListener("abort", abortFromCaller, { once: true });
+  unlisten = await listen<DockerStreamEvent>(eventName, (event) => {
     if (event.payload.sessionId !== sessionId) return;
     onEvent(event.payload);
     if (event.payload.done) {
-      stopped = true;
-      unlisten();
+      completed = true;
+      cleanup();
     }
   });
+  if (cancelled) {
+    cleanup();
+    return handle;
+  }
   try {
     await invoke(command, { ...payload, sessionId });
+    backendStarted = true;
+    if (cancelled) await stopBackend();
   } catch (error) {
-    unlisten();
+    cleanup();
     throw error;
   }
-  return {
-    sessionId,
-    stop: async () => {
-      if (stopped) return;
-      stopped = true;
-      unlisten();
-      await invoke("docker_stop_stream", { sessionId });
-    },
-  };
+  return handle;
 }
 
 export function dockerStartLogs(connectionId: string, containerId: string, options: DockerLogOptions, onEvent: (event: DockerStreamEvent) => void): Promise<DockerStreamHandle> {
   return startTauriStream("docker-log-stream", "docker_start_logs", { connectionId, containerId, options }, onEvent);
 }
 
-export function dockerPullImage(connectionId: string, image: string, auth: DockerRegistryAuth | undefined, onEvent: (event: DockerStreamEvent) => void): Promise<DockerStreamHandle> {
-  return startTauriStream("docker-image-pull", "docker_pull_image", { connectionId, image, auth }, onEvent);
+export function dockerPullImage(connectionId: string, image: string, auth: DockerRegistryAuth | undefined, onEvent: (event: DockerStreamEvent) => void, options?: DockerStreamStartOptions): Promise<DockerStreamHandle> {
+  return startTauriStream("docker-image-pull", "docker_pull_image", { connectionId, image, auth }, onEvent, options);
 }
 
 export async function dockerPushImage(connectionId: string, sourceImageId: string, targetReference: string, auth: DockerRegistryAuth | undefined, onEvent: (event: DockerTransferProgress) => void): Promise<DockerStreamHandle> {

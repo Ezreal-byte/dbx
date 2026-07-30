@@ -260,15 +260,6 @@ pub async fn docker_preview_container_file(
 }
 
 #[tauri::command]
-pub async fn docker_export_image(
-    state: State<'_, Arc<AppState>>,
-    connection_id: String,
-    image_id: String,
-) -> Result<Vec<u8>, String> {
-    dbx_core::docker::docker_export_image_bytes_core(&state, &connection_id, &image_id).await
-}
-
-#[tauri::command]
 pub async fn docker_export_image_to_path(
     state: State<'_, Arc<AppState>>,
     connection_id: String,

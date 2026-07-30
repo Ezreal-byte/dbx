@@ -374,7 +374,6 @@ export const dockerStartImageExport = forward("dockerStartImageExport");
 export const dockerListContainerFiles = forward("dockerListContainerFiles");
 export const dockerPreviewContainerFile = forward("dockerPreviewContainerFile");
 export const dockerRemoveImage = forward("dockerRemoveImage");
-export const dockerExportImage = forward("dockerExportImage");
 export const dockerExportImageToPath = forward("dockerExportImageToPath");
 export const dockerCreateVolume = forward("dockerCreateVolume");
 export const dockerCreateNetwork = forward("dockerCreateNetwork");

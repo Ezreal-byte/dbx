@@ -17,6 +17,8 @@ import { hexToRgba } from "@/lib/common/color";
 import { copyToClipboard } from "@/lib/common/clipboard";
 import { isTauriRuntime } from "@/lib/backend/tauriRuntime";
 import * as api from "@/lib/backend/api";
+import { createDockerProgressParseState, parseDockerProgressEvent, type DockerProgressParseState } from "@/components/docker/dockerTransferProgress";
+import { createPendingDockerPullTask } from "@/components/docker/dockerPullTask";
 import type { ConnectionConfig } from "@/types/database";
 import type {
   DockerConnectionInfo,
@@ -74,8 +76,7 @@ const imageActionInFlight = ref<Record<string, string | undefined>>({});
 type TransferTask = DockerTransferProgress & { startedAt: number; handle?: DockerStreamHandle };
 const transfers = ref<TransferTask[]>([]);
 const cancelledTransferIds = new Set<string>();
-const transferJsonBuffers = new Map<string, string>();
-const transferLayerStates = new Map<string, Map<string, boolean>>();
+const transferParseStates = new Map<string, DockerProgressParseState>();
 const transferOpen = ref(false);
 const pushImageOpen = ref(false);
 const pushDraft = ref({ sourceImageId: "", targetReference: "", serverAddress: "", username: "", password: "" });
@@ -349,51 +350,20 @@ function transferPercent(task: TransferTask): number | undefined {
 
 function dockerProgressFromChunk(sessionId: string, kind: "pull" | "push", image: string, chunk: string, done: boolean, error?: string | null): DockerTransferProgress {
   const current = transfers.value.find((task) => task.sessionId === sessionId);
-  const buffered = `${transferJsonBuffers.get(sessionId) || ""}${chunk}`.replace(/\r\n/g, "\n");
-  const lines = buffered.split("\n");
-  const remainder = lines.pop() ?? "";
-  transferJsonBuffers.set(sessionId, done ? "" : remainder);
-  if (done && remainder) lines.push(remainder);
-  const layers = transferLayerStates.get(sessionId) ?? new Map<string, boolean>();
-  transferLayerStates.set(sessionId, layers);
-  let bytesCompleted = current?.bytesCompleted ?? 0;
-  let bytesTotal = current?.bytesTotal ?? undefined;
-  let layersCompleted = current?.layersCompleted ?? 0;
-  let layersTotal = current?.layersTotal ?? 0;
-  let streamError = error || undefined;
-  for (const line of lines.filter(Boolean)) {
-    try {
-      const value = JSON.parse(line);
-      streamError ||= value.error || value.errorDetail?.message;
-      const id = String(value.id || "");
-      if (id) layers.set(id, /complete|already exists|pushed|mounted/i.test(String(value.status || "")));
-      const detail = value.progressDetail;
-      if (detail?.current != null) bytesCompleted = Math.max(bytesCompleted, Number(detail.current) || 0);
-      if (detail?.total != null) bytesTotal = Math.max(bytesTotal || 0, Number(detail.total) || 0);
-    } catch {
-      bytesCompleted += new TextEncoder().encode(line).byteLength;
-    }
-  }
-  if (layers.size) {
-    layersTotal = Math.max(layersTotal || 0, layers.size);
-    layersCompleted = Math.max(layersCompleted || 0, [...layers.values()].filter(Boolean).length);
-  }
-  const result: DockerTransferProgress = {
+  const state = transferParseStates.get(sessionId) ?? createDockerProgressParseState();
+  transferParseStates.set(sessionId, state);
+  const result = parseDockerProgressEvent(state, {
     sessionId,
     kind,
-    direction: kind === "push" ? "upload" : "download",
     image,
-    status: cancelledTransferIds.has(sessionId) ? "cancelled" : streamError ? "error" : done ? "done" : "running",
-    bytesCompleted,
-    bytesTotal,
-    layersCompleted,
-    layersTotal,
-    message: chunk,
-    error: streamError,
-  };
+    chunk,
+    done,
+    error,
+    cancelled: cancelledTransferIds.has(sessionId),
+    current,
+  });
   if (result.status !== "running") {
-    transferJsonBuffers.delete(sessionId);
-    transferLayerStates.delete(sessionId);
+    transferParseStates.delete(sessionId);
   }
   return result;
 }
@@ -707,38 +677,55 @@ async function applyCompose() {
 }
 
 async function pullImage() {
+  if (pulling.value) return;
   if (!(await confirmProductionMutation(t("docker.pullImage")))) return;
+  if (pulling.value) return;
+  const imageReference = pullDraft.value.image.trim();
+  if (!imageReference) return;
+  const auth: DockerRegistryAuth | undefined =
+    pullDraft.value.serverAddress || pullDraft.value.username || pullDraft.value.password
+      ? {
+          serverAddress: pullDraft.value.serverAddress,
+          username: pullDraft.value.username,
+          password: pullDraft.value.password,
+        }
+      : undefined;
+  const pending = createPendingDockerPullTask(imageReference);
   pulling.value = true;
   pullProgress.value = "";
   transferOpen.value = true;
+  pullImageOpen.value = false;
+  pullStream.value = pending.handle;
+  upsertTransfer(pending.progress, pending.handle);
+  pullDraft.value.password = "";
   try {
-    const auth: DockerRegistryAuth | undefined =
-      pullDraft.value.serverAddress || pullDraft.value.username || pullDraft.value.password
-        ? {
-            serverAddress: pullDraft.value.serverAddress,
-            username: pullDraft.value.username,
-            password: pullDraft.value.password,
-          }
-        : undefined;
-    pullDraft.value.password = "";
-    let startedStream: DockerStreamHandle | undefined;
-    const stream = await api.dockerPullImage(props.connection.id, pullDraft.value.image.trim(), auth, (event) => {
-      if (event.chunk) pullProgress.value = `${pullProgress.value}${event.chunk}`.slice(-20_000);
-      upsertTransfer(dockerProgressFromChunk(event.sessionId, "pull", pullDraft.value.image.trim(), event.chunk, event.done, event.error), startedStream);
-      if (event.error) {
-        toast(event.error, 5000);
-        pulling.value = false;
-        pullStream.value = undefined;
-      }
-      if (event.done && !event.error) {
-        pulling.value = false;
-        pullStream.value = undefined;
-        if (cancelledTransferIds.has(event.sessionId)) return;
-        toast(t("docker.imagePulled"), 2400);
-        pullImageOpen.value = false;
-        void loadResource("images");
-      }
-    });
+    let startedStream: DockerStreamHandle | undefined = pending.handle;
+    const stream = await api.dockerPullImage(
+      props.connection.id,
+      imageReference,
+      auth,
+      (event) => {
+        if (event.chunk) pullProgress.value = `${pullProgress.value}${event.chunk}`.slice(-20_000);
+        const previous = transfers.value.find((task) => task.sessionId === event.sessionId);
+        const progress = dockerProgressFromChunk(event.sessionId, "pull", imageReference, event.chunk, event.done, event.error);
+        upsertTransfer(progress, startedStream);
+        if (progress.status === "error") {
+          if (previous?.status !== "error") toast(progress.error || t("docker.transferFailed"), 5000);
+          pulling.value = false;
+          pullStream.value = undefined;
+          resetPullDraft();
+        }
+        if (event.done && progress.status === "done") {
+          pulling.value = false;
+          pullStream.value = undefined;
+          if (cancelledTransferIds.has(event.sessionId)) return;
+          toast(t("docker.imagePulled"), 2400);
+          resetPullDraft();
+          void loadResource("images");
+        }
+      },
+      pending.options,
+    );
     startedStream = stream;
     if (pulling.value) {
       pullStream.value = stream;
@@ -747,8 +734,18 @@ async function pullImage() {
     } else await stream.stop().catch(() => undefined);
   } catch (cause: any) {
     pulling.value = false;
-    toast(cause?.message || String(cause), 5000);
+    pullStream.value = undefined;
+    if (cancelledTransferIds.has(pending.progress.sessionId)) return;
+    const message = cause?.message || String(cause);
+    upsertTransfer({ ...pending.progress, status: "error", error: message }, pending.handle);
+    resetPullDraft();
+    toast(message, 5000);
   }
+}
+
+function resetPullDraft() {
+  pullDraft.value = { image: "", serverAddress: "", username: "", password: "" };
+  pullProgress.value = "";
 }
 
 async function stopImagePull() {
@@ -1110,7 +1107,7 @@ watch(resource, () => {
 watch(autoRefresh, restartResourceRefresh);
 watch(selectedContainerId, restartResourceRefresh);
 watch(pullImageOpen, (open) => {
-  if (!open) void stopImagePull();
+  if (!open) pullProgress.value = "";
 });
 watch(dangerOpen, (open) => {
   if (!open && dangerResolve) settleConfirmation(false);
