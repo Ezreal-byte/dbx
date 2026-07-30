@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
-import { ArrowLeft, ArrowUpDown, Box, ChevronDown, ChevronRight, Copy, Download, File, Folder, Pause, Pencil, Play, Plus, RefreshCw, RotateCw, Search, Square, Trash2, Upload, LoaderCircle, Activity, CircleHelp, Settings, X } from "@lucide/vue";
+import { ArrowLeft, ArrowUpDown, Box, ChevronDown, ChevronRight, Copy, Download, File, FileDown, FileUp, Folder, ListChecks, Pause, Pencil, Play, Plus, RefreshCw, RotateCw, Search, Square, Trash2, Upload, LoaderCircle, CircleHelp, Settings, X } from "@lucide/vue";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -9,9 +9,9 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { Switch } from "@/components/ui/switch";
 import MetricLineChart from "@/components/chart/MetricLineChart.vue";
-import DatabaseIcon from "@/components/icons/DatabaseIcon.vue";
 import JsonTree from "@/components/common/JsonTree.vue";
 import DangerConfirmDialog from "@/components/editor/DangerConfirmDialog.vue";
+import LightTooltip from "@/components/ui/LightTooltip.vue";
 import { useToast } from "@/composables/useToast";
 import { hexToRgba } from "@/lib/common/color";
 import { copyToClipboard } from "@/lib/common/clipboard";
@@ -78,8 +78,16 @@ const transferOpen = ref(false);
 const pushImageOpen = ref(false);
 const pushDraft = ref({ sourceImageId: "", targetReference: "", serverAddress: "", username: "", password: "" });
 const autoRefresh = ref(true);
+const refreshCountdown = ref(10);
 const lastRefreshAt = ref<Date>();
 const refreshInFlight = ref(false);
+const imageFileInput = ref<HTMLInputElement>();
+const columnWidths = ref<Record<ResourceKind, number[]>>({
+  containers: [230, 110, 190, 150, 80, 160, 95, 260],
+  images: [280, 140, 110, 180, 260],
+  volumes: [220, 140, 140, 380],
+  networks: [220, 150, 120, 120, 100, 100],
+});
 const sortState = ref<{ key: string; direction: SortDirection }>({ key: "name", direction: "asc" });
 const dangerOpen = ref(false);
 const dangerMessage = ref("");
@@ -290,6 +298,35 @@ const filteredEngineJson = computed(() => {
 });
 const runningTransfers = computed(() => transfers.value.filter((task) => task.status === "running").length);
 
+function tableStyle(kind: ResourceKind) {
+  return { minWidth: `${columnWidths.value[kind].reduce((sum, width) => sum + width, 0)}px` };
+}
+
+function handleHeaderPointer(event: PointerEvent, kind: ResourceKind) {
+  if (event.button !== 0) return;
+  const header = (event.target as HTMLElement).closest("th");
+  if (!(header instanceof HTMLTableCellElement)) return;
+  const bounds = header.getBoundingClientRect();
+  if (bounds.right - event.clientX > 8) return;
+  const index = header.cellIndex;
+  const initialWidth = columnWidths.value[kind][index];
+  if (initialWidth == null) return;
+  const initialX = event.clientX;
+  event.preventDefault();
+  event.stopPropagation();
+  const move = (moveEvent: PointerEvent) => {
+    const next = [...columnWidths.value[kind]];
+    next[index] = Math.max(64, initialWidth + moveEvent.clientX - initialX);
+    columnWidths.value = { ...columnWidths.value, [kind]: next };
+  };
+  const stop = () => {
+    window.removeEventListener("pointermove", move);
+    window.removeEventListener("pointerup", stop);
+  };
+  window.addEventListener("pointermove", move);
+  window.addEventListener("pointerup", stop, { once: true });
+}
+
 function upsertTransfer(progress: DockerTransferProgress, handle?: DockerStreamHandle) {
   const index = transfers.value.findIndex((task) => task.sessionId === progress.sessionId);
   if (index >= 0) {
@@ -386,7 +423,10 @@ async function loadResource(kind = resource.value) {
     if (kind === "images") images.value = await api.dockerListImages(props.connection.id);
     if (kind === "volumes") volumes.value = await api.dockerListVolumes(props.connection.id);
     if (kind === "networks") networks.value = await api.dockerListNetworks(props.connection.id);
-    if (kind === "containers") lastRefreshAt.value = new Date();
+    if (kind === "containers") {
+      lastRefreshAt.value = new Date();
+      refreshCountdown.value = 10;
+    }
   } catch (cause: any) {
     error.value = cause?.message || String(cause);
   } finally {
@@ -798,6 +838,49 @@ async function pushImage() {
   }
 }
 
+async function startImageLoad(source: string | File) {
+  if (!(await confirmProductionMutation(t("docker.loadImage")))) return;
+  transferOpen.value = true;
+  try {
+    let startedStream: DockerStreamHandle | undefined;
+    const stream = await api.dockerLoadImage(props.connection.id, source, (progress) => {
+      upsertTransfer(progress, startedStream);
+      if (progress.status === "done") {
+        toast(t("docker.imageLoaded"), 2400);
+        void loadResource("images");
+      } else if (progress.status === "error") {
+        toast(progress.error || t("docker.transferFailed"), 5000);
+      }
+    });
+    startedStream = stream;
+    const task = transfers.value.find((value) => value.sessionId === stream.sessionId);
+    if (task) upsertTransfer(task, stream);
+  } catch (cause: any) {
+    toast(cause?.message || String(cause), 5000);
+  }
+}
+
+async function openImageArchive() {
+  if (isReadOnly.value) return;
+  if (isTauriRuntime()) {
+    const { open } = await import("@tauri-apps/plugin-dialog");
+    const source = await open({
+      multiple: false,
+      filters: [{ name: "Docker image archive", extensions: ["tar"] }],
+    });
+    if (typeof source === "string") await startImageLoad(source);
+    return;
+  }
+  imageFileInput.value?.click();
+}
+
+function onImageArchiveSelected(event: Event) {
+  const input = event.target as HTMLInputElement;
+  const file = input.files?.[0];
+  input.value = "";
+  if (file) void startImageLoad(file);
+}
+
 async function cancelTransfer(task: TransferTask) {
   cancelledTransferIds.add(task.sessionId);
   await task.handle?.stop().catch(() => undefined);
@@ -1015,12 +1098,21 @@ function restartListSampling() {
 function restartResourceRefresh() {
   if (resourceRefreshTimer) window.clearInterval(resourceRefreshTimer);
   resourceRefreshTimer = undefined;
+  refreshCountdown.value = 10;
   if (!autoRefresh.value) return;
   resourceRefreshTimer = window.setInterval(() => {
-    if (autoRefresh.value && !document.hidden && resource.value === "containers" && !selectedContainer.value && !refreshInFlight.value) {
+    const active = autoRefresh.value && !document.hidden && resource.value === "containers" && !selectedContainer.value;
+    if (!active) {
+      refreshCountdown.value = 10;
+      return;
+    }
+    if (refreshInFlight.value) return;
+    refreshCountdown.value -= 1;
+    if (refreshCountdown.value <= 0) {
+      refreshCountdown.value = 10;
       void loadResource("containers");
     }
-  }, 10_000);
+  }, 1000);
 }
 
 function handleVisibilityChange() {
@@ -1079,71 +1171,58 @@ onUnmounted(() => {
 
 <template>
   <div class="flex h-full min-h-0 flex-col bg-background text-foreground" :style="workbenchStyle">
-    <header class="docker-header flex h-10 shrink-0 items-center border-b px-3">
-      <div class="flex min-w-0 items-center gap-2">
-        <DatabaseIcon db-type="docker" class="h-5 w-5 shrink-0" />
-        <div class="min-w-0">
-          <div class="max-w-40 truncate text-xs font-semibold">{{ connection.name }}</div>
-        </div>
-      </div>
-      <nav class="ml-5 flex h-full items-end gap-0.5">
+    <header class="docker-header">
+      <nav class="flex h-full items-end gap-0.5">
         <button v-for="kind in ['containers', 'images', 'volumes', 'networks'] as ResourceKind[]" :key="kind" class="docker-main-tab" :class="{ active: resource === kind }" @click="selectResource(kind)">
           {{ t(`docker.${kind}`) }}
         </button>
       </nav>
-      <div class="ml-auto flex items-center gap-1">
+      <div class="flex items-center gap-0.5">
         <Tooltip>
           <TooltipTrigger as-child
-            ><Button size="icon-sm" variant="ghost" @click="loadEngineDetails('json')"><Settings /></Button
+            ><Button variant="ghost" size="icon" class="h-6 w-6 text-cyan-600 hover:bg-cyan-500/10 hover:text-cyan-700 dark:text-cyan-300 dark:hover:text-cyan-200" @click="loadEngineDetails('json')"><Settings class="h-3.5 w-3.5" /></Button
           ></TooltipTrigger>
           <TooltipContent>{{ t("docker.engineJson") }}</TooltipContent>
         </Tooltip>
         <Tooltip>
           <TooltipTrigger as-child
-            ><Button size="icon-sm" variant="ghost" @click="loadEngineDetails('summary')"><CircleHelp /></Button
+            ><Button variant="ghost" size="icon" class="h-6 w-6 text-amber-600 hover:bg-amber-500/10 hover:text-amber-700 dark:text-amber-300 dark:hover:text-amber-200" @click="loadEngineDetails('summary')"><CircleHelp class="h-3.5 w-3.5" /></Button
           ></TooltipTrigger>
           <TooltipContent>{{ t("docker.engineInformation") }}</TooltipContent>
         </Tooltip>
         <Popover v-model:open="transferOpen">
-          <Tooltip>
-            <TooltipTrigger as-child>
-              <PopoverTrigger as-child>
-                <Button size="icon-sm" variant="ghost" class="relative">
-                  <Activity />
-                  <span v-if="runningTransfers" class="absolute -right-0.5 -top-0.5 min-w-3.5 rounded-full bg-primary px-1 text-[9px] leading-3.5 text-primary-foreground">{{ runningTransfers }}</span>
-                </Button>
-              </PopoverTrigger>
-            </TooltipTrigger>
-            <TooltipContent>{{ t("docker.transfers") }}</TooltipContent>
-          </Tooltip>
-          <PopoverContent align="end" class="w-[26rem] gap-0 p-0">
-            <div class="border-b px-3 py-2 text-sm font-semibold">{{ t("docker.transfers") }}</div>
-            <div v-if="!transfers.length" class="p-6 text-center text-xs text-muted-foreground">{{ t("docker.noTransfers") }}</div>
-            <div v-else class="max-h-96 overflow-auto">
-              <div v-for="task in transfers" :key="task.sessionId" class="border-b p-3 last:border-0">
-                <div class="flex items-start gap-2">
-                  <Upload v-if="task.direction === 'upload'" class="mt-0.5 h-4 w-4 text-sky-500" />
-                  <Download v-else class="mt-0.5 h-4 w-4 text-emerald-500" />
-                  <div class="min-w-0 flex-1">
-                    <div class="flex items-center gap-2">
-                      <span class="truncate text-xs font-medium">{{ task.image }}</span
-                      ><span class="ml-auto text-[10px] uppercase text-muted-foreground">{{ task.kind }} · {{ t(`docker.transferStatus.${task.status}`) }}</span>
-                    </div>
-                    <div class="mt-1 h-1.5 overflow-hidden rounded-full bg-muted">
-                      <div v-if="transferPercent(task) != null" class="h-full bg-primary transition-[width]" :style="{ width: `${transferPercent(task)}%` }" />
-                      <div v-else-if="task.status === 'running'" class="docker-indeterminate h-full w-1/3 bg-primary" />
-                    </div>
-                    <div class="mt-1 flex text-[10px] text-muted-foreground">
-                      <span
-                        >{{ formatBytes(task.bytesCompleted) }}<template v-if="task.bytesTotal"> / {{ formatBytes(task.bytesTotal) }}</template></span
-                      >
-                      <span v-if="task.layersTotal" class="ml-2">{{ task.layersCompleted || 0 }}/{{ task.layersTotal }} {{ t("docker.layers") }}</span>
-                      <span class="ml-auto">{{ new Date(task.startedAt).toLocaleTimeString() }}</span>
-                    </div>
-                    <div v-if="task.error" class="mt-1 break-words text-[10px] text-destructive">{{ task.error }}</div>
-                  </div>
-                  <Button v-if="task.status === 'running'" size="icon-sm" variant="ghost" :title="t('common.cancel')" @click="cancelTransfer(task)"><X /></Button>
+          <LightTooltip :text="t('docker.transfers')">
+            <PopoverTrigger as-child>
+              <Button variant="ghost" size="icon" class="relative h-6 w-6 text-blue-600 hover:bg-blue-500/10 hover:text-blue-700 dark:text-blue-300 dark:hover:text-blue-200">
+                <ListChecks class="h-3.5 w-3.5" />
+                <span v-if="runningTransfers" class="absolute right-0.5 top-0.5 h-1.5 w-1.5 rounded-full bg-primary" />
+              </Button>
+            </PopoverTrigger>
+          </LightTooltip>
+          <PopoverContent align="end" class="w-80 p-2">
+            <div class="mb-2 px-1 text-xs font-semibold">{{ t("docker.transfers") }}</div>
+            <div v-if="!transfers.length" class="px-2 py-8 text-center text-xs text-muted-foreground">{{ t("docker.noTransfers") }}</div>
+            <div v-else class="max-h-72 space-y-1 overflow-auto">
+              <div v-for="task in transfers" :key="task.sessionId" class="rounded border p-2">
+                <div class="flex items-center gap-2">
+                  <FileUp v-if="task.direction === 'upload'" class="h-3.5 w-3.5 shrink-0 text-teal-600 dark:text-teal-300" />
+                  <FileDown v-else class="h-3.5 w-3.5 shrink-0 text-sky-600 dark:text-sky-300" />
+                  <span class="min-w-0 flex-1 truncate text-xs">{{ task.image }}</span>
+                  <span class="rounded bg-muted px-1.5 py-0.5 text-[9px] text-muted-foreground">{{ task.direction === "upload" ? t("docker.upload") : t("docker.download") }}</span>
+                  <span class="text-[10px] text-muted-foreground">{{ transferPercent(task) == null ? "—" : `${Math.round(transferPercent(task)!)}%` }}</span>
+                  <Button v-if="task.status === 'running'" size="icon-xs" variant="ghost" @click="cancelTransfer(task)"><X class="h-3 w-3" /></Button>
                 </div>
+                <div class="mt-1.5 h-1 overflow-hidden rounded bg-muted">
+                  <div v-if="transferPercent(task) != null" class="h-full bg-primary transition-[width]" :style="{ width: `${transferPercent(task)}%` }" />
+                  <div v-else-if="task.status === 'running'" class="docker-indeterminate h-full w-1/3 bg-primary" />
+                </div>
+                <div class="mt-1 grid grid-cols-[minmax(64px,1fr)_auto] items-center gap-2 text-[10px] text-muted-foreground">
+                  <span class="truncate">{{ t(`docker.transferStatus.${task.status}`) }}</span>
+                  <span class="whitespace-nowrap text-right tabular-nums"
+                    >{{ formatBytes(task.bytesCompleted) }}<template v-if="task.bytesTotal"> / {{ formatBytes(task.bytesTotal) }}</template></span
+                  >
+                </div>
+                <div v-if="task.error" class="mt-1 break-words text-[10px] text-destructive">{{ task.error }}</div>
               </div>
             </div>
           </PopoverContent>
@@ -1281,19 +1360,25 @@ onUnmounted(() => {
               </button>
             </div>
           </template>
-          <Button v-else-if="resource === 'images'" :disabled="isReadOnly" @click="pullImageOpen = true"><Download />{{ t("docker.pullImage") }}</Button>
+          <template v-else-if="resource === 'images'">
+            <Button :disabled="isReadOnly" @click="pullImageOpen = true"><Download />{{ t("docker.pullImage") }}</Button>
+            <Button variant="outline" :disabled="isReadOnly" @click="openImageArchive"><Upload />{{ t("docker.loadImage") }}</Button>
+          </template>
           <Button v-else-if="resource === 'volumes'" :disabled="isReadOnly" @click="createVolumeOpen = true"><Plus />{{ t("docker.createVolume") }}</Button>
           <Button v-else :disabled="isReadOnly" @click="createNetworkOpen = true"><Plus />{{ t("docker.createNetwork") }}</Button>
           <template v-if="resource === 'containers'">
             <span class="ml-auto text-[11px] text-muted-foreground">{{ t("docker.lastRefreshed") }}: {{ lastRefreshAt?.toLocaleTimeString() || "—" }}</span>
-            <label class="flex items-center gap-2 text-xs text-muted-foreground"><Switch v-model="autoRefresh" />{{ t("docker.autoRefresh") }}</label>
+            <label class="flex items-center gap-2 text-xs text-muted-foreground"><Switch v-model="autoRefresh" />{{ t("docker.autoRefresh", { seconds: refreshCountdown }) }}</label>
           </template>
           <Button :class="{ 'ml-auto': resource !== 'containers' }" variant="ghost" :disabled="loading" @click="loadResource()"><RefreshCw :class="{ 'animate-spin': loading }" />{{ t("docker.refresh") }}</Button>
         </div>
 
         <div class="min-h-0 flex-1 overflow-auto">
-          <table v-if="resource === 'containers'" class="docker-table">
-            <thead>
+          <table v-if="resource === 'containers'" class="docker-table" :style="tableStyle('containers')">
+            <colgroup>
+              <col v-for="(width, index) in columnWidths.containers" :key="index" :style="{ width: `${width}px` }" />
+            </colgroup>
+            <thead @pointerdown="handleHeaderPointer($event, 'containers')">
               <tr>
                 <th>
                   <button class="docker-sort" @click="toggleSort('name')">{{ t("docker.name") }}<ArrowUpDown /></button>
@@ -1441,8 +1526,11 @@ onUnmounted(() => {
             </tbody>
           </table>
 
-          <table v-else-if="resource === 'images'" class="docker-table">
-            <thead>
+          <table v-else-if="resource === 'images'" class="docker-table" :style="tableStyle('images')">
+            <colgroup>
+              <col v-for="(width, index) in columnWidths.images" :key="index" :style="{ width: `${width}px` }" />
+            </colgroup>
+            <thead @pointerdown="handleHeaderPointer($event, 'images')">
               <tr>
                 <th class="docker-image-name-column">
                   <div class="docker-resizable-column">
@@ -1490,8 +1578,11 @@ onUnmounted(() => {
               </tr>
             </tbody>
           </table>
-          <table v-else-if="resource === 'volumes'" class="docker-table">
-            <thead>
+          <table v-else-if="resource === 'volumes'" class="docker-table" :style="tableStyle('volumes')">
+            <colgroup>
+              <col v-for="(width, index) in columnWidths.volumes" :key="index" :style="{ width: `${width}px` }" />
+            </colgroup>
+            <thead @pointerdown="handleHeaderPointer($event, 'volumes')">
               <tr>
                 <th>
                   <button class="docker-sort" @click="toggleSort('name')">{{ t("docker.name") }}<ArrowUpDown /></button>
@@ -1516,8 +1607,11 @@ onUnmounted(() => {
               </tr>
             </tbody>
           </table>
-          <table v-else class="docker-table">
-            <thead>
+          <table v-else class="docker-table" :style="tableStyle('networks')">
+            <colgroup>
+              <col v-for="(width, index) in columnWidths.networks" :key="index" :style="{ width: `${width}px` }" />
+            </colgroup>
+            <thead @pointerdown="handleHeaderPointer($event, 'networks')">
               <tr>
                 <th>
                   <button class="docker-sort" @click="toggleSort('name')">{{ t("docker.name") }}<ArrowUpDown /></button>
@@ -1553,6 +1647,8 @@ onUnmounted(() => {
         </div>
       </template>
     </main>
+
+    <input ref="imageFileInput" class="hidden" type="file" accept=".tar,application/x-tar,application/x-gtar" @change="onImageArchiveSelected" />
 
     <Dialog v-model:open="createContainerOpen">
       <DialogContent class="max-h-[88vh] max-w-3xl overflow-auto">
@@ -1781,11 +1877,19 @@ onUnmounted(() => {
 
 <style scoped>
 .docker-header {
+  display: flex;
+  height: 36px;
+  flex: 0 0 36px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  border-bottom: 1px solid var(--border);
+  padding: 0 8px;
   background: linear-gradient(90deg, var(--docker-accent-soft, color-mix(in srgb, var(--muted) 24%, transparent)), var(--docker-accent-faint, transparent));
   box-shadow: inset 0 -1px 0 color-mix(in srgb, var(--docker-accent, var(--border)) 35%, var(--border));
 }
 .docker-main-tab {
-  height: 2rem;
+  height: 30px;
   border-bottom: 2px solid transparent;
   padding: 0 0.7rem;
   font-size: 0.75rem;
@@ -1828,6 +1932,15 @@ onUnmounted(() => {
   font-size: 0.75rem;
   font-weight: 500;
   color: var(--muted-foreground);
+}
+.docker-table th::after {
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 7px;
+  height: 100%;
+  content: "";
+  cursor: col-resize;
 }
 .docker-table td {
   border-bottom: 1px solid var(--border);
@@ -1899,46 +2012,20 @@ onUnmounted(() => {
   background: color-mix(in srgb, var(--muted-foreground) 14%, transparent);
   color: var(--muted-foreground);
 }
-.docker-table th:nth-child(1) {
-  width: 15rem;
-}
-.docker-table th:nth-child(2) {
-  width: 7.5rem;
-}
-.docker-table th:nth-child(3) {
-  width: 13rem;
-}
-.docker-table th:nth-child(4) {
-  width: 11rem;
-}
-.docker-table th:nth-child(5) {
-  width: 5.5rem;
-}
-.docker-table th:nth-child(6) {
-  width: 11rem;
-}
-.docker-table th:nth-child(7) {
-  width: 6.5rem;
-}
-.docker-table th:last-child {
-  width: 15rem;
-}
 .docker-truncated-cell {
-  max-width: 13rem;
+  width: 100%;
+  max-width: 100%;
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
 }
 .docker-image-name-column {
-  width: 18rem !important;
-  max-width: 42vw;
+  overflow: hidden;
 }
 .docker-resizable-column {
-  width: 18rem;
-  min-width: 10rem;
-  max-width: 42vw;
+  width: 100%;
+  max-width: 100%;
   overflow: hidden;
-  resize: horizontal;
 }
 .docker-indeterminate {
   animation: docker-progress 1.2s ease-in-out infinite;

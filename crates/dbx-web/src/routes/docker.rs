@@ -117,6 +117,12 @@ pub(crate) struct LogStreamQuery {
     timestamps: Option<bool>,
 }
 
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct LoadImageQuery {
+    connection_id: String,
+}
+
 fn default_true() -> bool {
     true
 }
@@ -436,6 +442,24 @@ pub async fn push_image(
         Ok::<_, Infallible>(event)
     });
     Ok(Sse::new(stream).keep_alive(KeepAlive::default()))
+}
+
+pub async fn load_image(
+    State(state): State<Arc<WebState>>,
+    Query(query): Query<LoadImageQuery>,
+    body: Body,
+) -> Result<Response, AppError> {
+    ensure_web_writes_enabled(&state)?;
+    let upstream = dbx_core::docker::docker_load_image_response_core(
+        &state.app,
+        &query.connection_id,
+        reqwest::Body::wrap_stream(body.into_data_stream()),
+    )
+    .await
+    .map_err(AppError::from)?;
+    let mut response = Body::from_stream(upstream.bytes_stream()).into_response();
+    response.headers_mut().insert(header::CONTENT_TYPE, HeaderValue::from_static("application/json"));
+    Ok(response)
 }
 
 pub async fn inspect_container(

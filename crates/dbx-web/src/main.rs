@@ -562,6 +562,7 @@ async fn main() {
         .route("/docker/containers/files/download", post(routes::docker::download_container_file))
         .route("/docker/images/pull", post(routes::docker::pull_image))
         .route("/docker/images/push", post(routes::docker::push_image))
+        .route("/docker/images/load", post(routes::docker::load_image))
         .route("/docker/images/remove", post(routes::docker::remove_image))
         .route("/docker/images/export", post(routes::docker::export_image))
         .route("/docker/volumes/create", post(routes::docker::create_volume))

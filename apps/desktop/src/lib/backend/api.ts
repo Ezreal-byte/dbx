@@ -371,6 +371,7 @@ export const dockerStartLogs = forward("dockerStartLogs");
 export const dockerPullImage = forward("dockerPullImage");
 export const dockerPushImage = forward("dockerPushImage");
 export const dockerStartImageExport = forward("dockerStartImageExport");
+export const dockerLoadImage = forward("dockerLoadImage");
 export const dockerListContainerFiles = forward("dockerListContainerFiles");
 export const dockerPreviewContainerFile = forward("dockerPreviewContainerFile");
 export const dockerDownloadContainerFile = forward("dockerDownloadContainerFile");

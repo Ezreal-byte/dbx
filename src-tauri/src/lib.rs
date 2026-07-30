@@ -1620,6 +1620,7 @@ pub fn run() {
             commands::docker_cmd::docker_download_container_file,
             commands::docker_cmd::docker_pull_image,
             commands::docker_cmd::docker_push_image,
+            commands::docker_cmd::docker_load_image_from_path,
             commands::docker_cmd::docker_start_image_export,
             commands::docker_cmd::docker_stop_transfer,
             commands::docker_cmd::docker_remove_image,

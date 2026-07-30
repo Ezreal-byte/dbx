@@ -146,7 +146,11 @@ pub async fn docker_container_action_core(
         DockerContainerAction::Restart => "restart",
     };
     let path = format!("/containers/{}/{action_name}", encoded_id(container_id));
-    let result = client.post_empty(&path).await;
+    let result = if matches!(action, DockerContainerAction::Stop | DockerContainerAction::Restart) {
+        client.post_empty_long_running(&path).await
+    } else {
+        client.post_empty(&path).await
+    };
     match &result {
         Ok(()) => log::info!(
             "Docker lifecycle action succeeded: connection_id={} container_id={} action={}",
@@ -493,6 +497,16 @@ pub async fn docker_push_image_response_core(
             encode_registry_auth(auth),
         )
         .await
+}
+
+pub async fn docker_load_image_response_core(
+    state: &AppState,
+    connection_id: &str,
+    body: reqwest::Body,
+) -> Result<reqwest::Response, String> {
+    let (connection, client, _) = connection_and_client(state, connection_id).await?;
+    ensure_writable(&connection, "image load")?;
+    client.request_body_stream(Method::POST, "/images/load?quiet=false", body, "application/x-tar").await
 }
 
 pub async fn docker_container_logs_response_core(

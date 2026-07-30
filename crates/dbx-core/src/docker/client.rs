@@ -62,6 +62,10 @@ impl DockerClient {
         request_empty_with(&self.client, Method::POST, &self.endpoint(path)).await
     }
 
+    pub async fn post_empty_long_running(&self, path: &str) -> Result<(), String> {
+        request_empty_with(&self.stream_client, Method::POST, &self.endpoint(path)).await
+    }
+
     pub async fn post_json<T: DeserializeOwned>(&self, path: &str, body: Value) -> Result<T, String> {
         request_json_with(&self.client, Method::POST, &self.endpoint(path), Some(body)).await
     }
@@ -95,6 +99,30 @@ impl DockerClient {
         }
         let response = request.send().await.map_err(|error| docker_transport_error(&url, error))?;
         if response.status().is_success() || response.status() == StatusCode::NOT_MODIFIED {
+            return Ok(response);
+        }
+        let status = response.status();
+        let bytes = response.bytes().await.unwrap_or_default();
+        Err(docker_api_error(status, &bytes))
+    }
+
+    pub async fn request_body_stream(
+        &self,
+        method: Method,
+        path: &str,
+        body: reqwest::Body,
+        content_type: &str,
+    ) -> Result<reqwest::Response, String> {
+        let url = self.endpoint(path);
+        let response = self
+            .stream_client
+            .request(method, &url)
+            .header(reqwest::header::CONTENT_TYPE, content_type)
+            .body(body)
+            .send()
+            .await
+            .map_err(|error| docker_transport_error(&url, error))?;
+        if response.status().is_success() {
             return Ok(response);
         }
         let status = response.status();

@@ -1,11 +1,12 @@
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::sync::OnceLock;
 
 use futures::StreamExt;
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, State};
-use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::{watch, Mutex};
 
 use crate::commands::connection::AppState;
@@ -588,6 +589,122 @@ pub async fn docker_push_image(
             Err(error) => ("error", 0, Some(error)),
         };
         emit_transfer(&app, &task_session_id, "push", "upload", &target_reference, status, bytes, None, None, error);
+        docker_streams().lock().await.remove(&task_session_id);
+    });
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn docker_load_image_from_path(
+    app: AppHandle,
+    state: State<'_, Arc<AppState>>,
+    session_id: String,
+    connection_id: String,
+    source_path: String,
+) -> Result<(), String> {
+    let metadata = tokio::fs::metadata(&source_path)
+        .await
+        .map_err(|error| format!("Failed to read image archive metadata: {error}"))?;
+    if !metadata.is_file() {
+        return Err("Image archive must be a file".to_string());
+    }
+    let file =
+        tokio::fs::File::open(&source_path).await.map_err(|error| format!("Failed to open image archive: {error}"))?;
+    let image_name = std::path::Path::new(&source_path)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("docker-image.tar")
+        .to_string();
+    let total = metadata.len();
+    let (cancel_sender, cancelled) = watch::channel(false);
+    docker_streams().lock().await.insert(session_id.clone(), cancel_sender);
+    let app_state = state.inner().clone();
+    let task_session_id = session_id.clone();
+    tauri::async_runtime::spawn(async move {
+        let cancellation_observed = Arc::new(AtomicBool::new(false));
+        let transferred_bytes = Arc::new(AtomicU64::new(0));
+        emit_transfer(&app, &task_session_id, "load", "upload", &image_name, "running", 0, Some(total), None, None);
+        let progress_app = app.clone();
+        let progress_session = task_session_id.clone();
+        let progress_image = image_name.clone();
+        let progress_cancelled = cancellation_observed.clone();
+        let progress_transferred = transferred_bytes.clone();
+        let upload_stream = futures::stream::try_unfold(
+            (file, cancelled, 0u64),
+            move |(mut file, mut cancelled, transferred)| {
+                let app = progress_app.clone();
+                let session_id = progress_session.clone();
+                let image = progress_image.clone();
+                let cancellation_observed = progress_cancelled.clone();
+                let transferred_bytes = progress_transferred.clone();
+                async move {
+                    let mut buffer = vec![0u8; 256 * 1024];
+                    let read = tokio::select! {
+                        changed = cancelled.changed() => {
+                            if changed.is_err() || *cancelled.borrow() {
+                                cancellation_observed.store(true, Ordering::Relaxed);
+                                return Err(std::io::Error::new(std::io::ErrorKind::Interrupted, "Docker image load cancelled"));
+                            }
+                            0
+                        }
+                        read = file.read(&mut buffer) => read?
+                    };
+                    if read == 0 {
+                        return Ok(None);
+                    }
+                    buffer.truncate(read);
+                    let next_transferred = transferred + read as u64;
+                    transferred_bytes.store(next_transferred, Ordering::Relaxed);
+                    emit_transfer(
+                        &app,
+                        &session_id,
+                        "load",
+                        "upload",
+                        &image,
+                        "running",
+                        next_transferred,
+                        Some(total),
+                        None,
+                        None,
+                    );
+                    Ok(Some((buffer, (file, cancelled, next_transferred))))
+                }
+            },
+        );
+        let result = async {
+            let response = dbx_core::docker::docker_load_image_response_core(
+                &app_state,
+                &connection_id,
+                reqwest::Body::wrap_stream(upload_stream),
+            )
+            .await?;
+            let bytes = response
+                .bytes()
+                .await
+                .map_err(|error| format!("Failed to read Docker image load response: {error}"))?;
+            if let Some(error) = docker_json_stream_error(&bytes) {
+                return Err(format!("Docker image load failed: {error}"));
+            }
+            Ok::<(), String>(())
+        }
+        .await;
+        let (status, error) = match result {
+            Ok(()) => ("done", None),
+            Err(_) if cancellation_observed.load(Ordering::Relaxed) => ("cancelled", None),
+            Err(error) => ("error", Some(error)),
+        };
+        emit_transfer(
+            &app,
+            &task_session_id,
+            "load",
+            "upload",
+            &image_name,
+            status,
+            transferred_bytes.load(Ordering::Relaxed),
+            Some(total),
+            None,
+            error,
+        );
         docker_streams().lock().await.remove(&task_session_id);
     });
     Ok(())

@@ -201,3 +201,32 @@ export async function dockerStartImageExport(connectionId: string, imageId: stri
     },
   };
 }
+
+export async function dockerLoadImage(connectionId: string, source: string | File, onEvent: (event: DockerTransferProgress) => void): Promise<DockerStreamHandle> {
+  if (typeof source !== "string") throw new Error("Desktop image loading requires a local file path");
+  const sessionId = streamSessionId();
+  let stopped = false;
+  const unlisten = await listen<DockerTransferProgress>("docker-transfer-progress", (event) => {
+    if (event.payload.sessionId !== sessionId) return;
+    onEvent(event.payload);
+    if (event.payload.status !== "running") {
+      stopped = true;
+      unlisten();
+    }
+  });
+  try {
+    await invoke("docker_load_image_from_path", { connectionId, sourcePath: source, sessionId });
+  } catch (error) {
+    unlisten();
+    throw error;
+  }
+  return {
+    sessionId,
+    stop: async () => {
+      if (stopped) return;
+      stopped = true;
+      unlisten();
+      await invoke("docker_stop_transfer", { sessionId });
+    },
+  };
+}
