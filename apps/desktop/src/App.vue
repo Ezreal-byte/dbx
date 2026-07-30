@@ -1449,6 +1449,10 @@ async function onClickTable(table: SqlObjectNavigationTarget) {
     showQueryEditorDdlDialog.value = true;
     return;
   }
+  if (settingsStore.editorSettings.clickTableNavigationTarget === "ddl") {
+    queryStore.openTableStructure(target.connectionId, target.database, target.schema, target.tableName, "ddl", undefined, target.catalog);
+    return;
+  }
   try {
     await openTableTarget(target, { tableInfoTab: "ddl" });
   } catch (e: any) {
@@ -1565,6 +1569,7 @@ function changeActiveSchema(schema: string | undefined) {
   const tab = activeTab.value;
   if (tab) queryStore.updateSchema(tab.id, schema);
 }
+
 function openGitHub() {
   openUrl("https://github.com/t8y2/dbx");
 }

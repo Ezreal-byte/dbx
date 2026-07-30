@@ -417,6 +417,7 @@ export const redisScanKeys = forward("redisScanKeys");
 export const redisScanKeysBatch = forward("redisScanKeysBatch");
 export const redisScanValues = forward("redisScanValues");
 export const redisGetValue = forward("redisGetValue");
+export const redisGetStreamEntries = forward("redisGetStreamEntries");
 export const redisGetStreamGroups = forward("redisGetStreamGroups");
 export const redisGetStreamConsumers = forward("redisGetStreamConsumers");
 export const redisGetStreamPending = forward("redisGetStreamPending");
@@ -665,6 +666,7 @@ export type {
   RedisStreamField,
   RedisStreamGroup,
   RedisStreamMetric,
+  RedisStreamPage,
   RedisStreamPendingEntry,
   RedisStreamPendingPage,
   RedisValue,
