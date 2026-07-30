@@ -507,7 +507,12 @@ function isGroupLabel(node: TreeNode): boolean {
 async function toggle() {
   const node = activeNode.value;
   if (node.isLoading) {
-    if (!node.isExpanded) {
+    if (node.isExpanded) {
+      node.isExpanded = false;
+      if (!connectionStore.sidebarSearchQuery) connectionStore.releaseCollapsedTreeNodeChildren(node.id);
+      connectionStore.cancelTreeNodeLoad(node.id);
+      emit("node-toggled", node, true);
+    } else {
       node.isExpanded = true;
       emit("node-toggled", node, false);
     }
@@ -570,7 +575,7 @@ async function toggle() {
         await connectionStore.loadZooKeeperRoot(node.connectionId);
       } else if (config?.db_type === "mongodb") {
         await connectionStore.loadMongoDatabases(node.connectionId);
-      } else if (config?.db_type === "elasticsearch") {
+      } else if (config?.db_type === "elasticsearch" || config?.db_type === "easysearch") {
         // Expand: list indices (like other db types list databases).
         await connectionStore.loadElasticsearchIndices(node.connectionId);
       } else if (config?.db_type === "milvus") {
@@ -1141,7 +1146,7 @@ async function openServerDashboard() {
     connectionStore.activeConnectionId = node.connectionId;
     if (currentDatabaseType() === "nacos") {
       queryStore.openNacosDashboard(node.connectionId);
-    } else if (currentDatabaseType() === "postgres") {
+    } else if (connectionSupportsPgServerDashboard(connectionStore.getConfig(node.connectionId))) {
       queryStore.openPostgresDashboard(node.connectionId);
     } else {
       queryStore.openMysqlDashboard(node.connectionId);
@@ -3178,7 +3183,7 @@ const canOpenSqlFileExecution = computed(() => {
 const canExportAllDatabases = computed(() => {
   if (activeNode.value.type !== "connection" || !activeNode.value.connectionId) return false;
   const dbType = connectionStore.getConfig(activeNode.value.connectionId)?.db_type;
-  return !["redis", "mongodb", "elasticsearch", "qdrant", "milvus", "weaviate", "chromadb", "etcd", "zookeeper", "mq", "nacos"].includes(dbType || "");
+  return !["redis", "mongodb", "elasticsearch", "easysearch", "qdrant", "milvus", "weaviate", "chromadb", "etcd", "zookeeper", "mq", "nacos"].includes(dbType || "");
 });
 
 const canOpenDiagram = computed(() => {

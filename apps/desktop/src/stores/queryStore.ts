@@ -46,7 +46,7 @@ import { frontendQueryTimeoutSecsForSql, queryTimeoutSecsForConnection } from "@
 import { queryResultNameFromPreamble, queryResultSourceLabel } from "@/lib/sql/queryResultSource";
 import { simpleDataGridOrderByReferencesMissingColumn, sortDataGridRowIndexes, type DataGridSortDirection } from "@/lib/dataGrid/dataGridSort";
 import { MAX_RESULT_PAGE_SIZE, normalizeResultPageSize } from "@/lib/dataGrid/paginationPageSize";
-import { executableStatementRanges, splitSqlStatementRanges } from "@/lib/sql/sqlStatementRanges";
+import { elasticsearchRestRequestRanges, executableStatementRanges, splitSqlStatementRanges } from "@/lib/sql/sqlStatementRanges";
 import { externalSqlFileDisplayTitles, normalizeExternalSqlPath } from "@/lib/sql/sqlFileOpen";
 import { clearDataGridPendingSnapshotsForTab } from "@/composables/useDataGridEditor";
 import { buildTabResultSnapshot, deleteTabResultSnapshot, pruneTabResultSnapshots, readTabResultSnapshot, tabResultCacheKey, writeTabResultSnapshot } from "@/lib/tabs/tabResultCache";
@@ -370,14 +370,6 @@ function annotateQueryResultSource(result: QueryResult, sourceStatement: string,
   const label = databaseType ? queryResultSourceLabel(sourceStatement, { database, databaseType }) : undefined;
   if (label) result.sourceLabel = label;
   return result;
-}
-
-const ELASTICSEARCH_REST_REQUEST = /^(?:GET|POST|PUT|DELETE|HEAD)\s+\S+/i;
-
-function elasticsearchRestRequestRanges(sql: string, databaseType?: DatabaseType) {
-  if (databaseType !== "elasticsearch") return [];
-  const requests = splitSqlStatementRanges(sql, databaseType);
-  return requests.length > 0 && requests.every((request) => ELASTICSEARCH_REST_REQUEST.test(request.sql)) ? requests : [];
 }
 
 function elasticsearchHttpErrorStatus(result: QueryResult): number | undefined {
@@ -2816,8 +2808,10 @@ export const useQueryStore = defineStore("query", () => {
   function resolveEditableSourceMetadataTarget(tab: QueryTab, analysis: EditableQueryInfo, source: EditableQuerySource, conn: ConnectionConfig | undefined, dbType: string, executionDatabase: string): EditableSourceMetadataTarget {
     // Metadata must resolve in the same namespace as the query execution. An
     // empty query-tab database still executes in the connection's default DB,
-    // while database-tree dialects may override it with a qualified source.
-    const metadataDatabase = (connectionUsesDatabaseObjectTreeMode(conn) ? source.schema : undefined) || executionDatabase || conn?.database || tab.database;
+    // while database-tree dialects and SQL Server 3-part names may override it
+    // with a qualified source.
+    const qualifiedSourceDatabase = dbType === "sqlserver" ? source.catalog : connectionUsesDatabaseObjectTreeMode(conn) ? source.schema : undefined;
+    const metadataDatabase = qualifiedSourceDatabase || executionDatabase || conn?.database || tab.database;
     let schema = source.schema || tab.schema;
     if (!schema) {
       if (dbType === "postgres" || dbType === "kwdb") schema = "public";

@@ -3721,6 +3721,11 @@ export default withEnglishFallback({
       error: "Errore",
       cancelled: "Annullato",
     },
+    fileProgress: "File {current} di {total}",
+    fileColumn: "File",
+    totalFiles: "{count} file",
+    expandSummary: "Espandi tabella riepilogativa",
+    restoreSummary: "Ripristina tabella riepilogativa",
   },
   diff: {
     title: "Confronta Schemi",
