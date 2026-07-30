@@ -5,6 +5,7 @@ use std::sync::OnceLock;
 use futures::StreamExt;
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, State};
+use tokio::io::AsyncWriteExt;
 use tokio::sync::{watch, Mutex};
 
 use crate::commands::connection::AppState;
@@ -24,12 +25,84 @@ struct DockerStreamEvent {
     error: Option<String>,
 }
 
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DockerTransferProgress {
+    session_id: String,
+    kind: String,
+    direction: String,
+    image: String,
+    status: String,
+    bytes_completed: u64,
+    bytes_total: Option<u64>,
+    layers_completed: Option<u64>,
+    layers_total: Option<u64>,
+    message: Option<String>,
+    error: Option<String>,
+}
+
+fn emit_transfer(
+    app: &AppHandle,
+    session_id: &str,
+    kind: &str,
+    direction: &str,
+    image: &str,
+    status: &str,
+    bytes_completed: u64,
+    bytes_total: Option<u64>,
+    message: Option<String>,
+    error: Option<String>,
+) {
+    let _ = app.emit(
+        "docker-transfer-progress",
+        DockerTransferProgress {
+            session_id: session_id.to_string(),
+            kind: kind.to_string(),
+            direction: direction.to_string(),
+            image: image.to_string(),
+            status: status.to_string(),
+            bytes_completed,
+            bytes_total,
+            layers_completed: None,
+            layers_total: None,
+            message,
+            error,
+        },
+    );
+}
+
+fn docker_json_stream_error(chunk: &[u8]) -> Option<String> {
+    String::from_utf8_lossy(chunk)
+        .lines()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .find_map(|value| {
+            value
+                .get("error")
+                .and_then(serde_json::Value::as_str)
+                .or_else(|| {
+                    value
+                        .get("errorDetail")
+                        .and_then(|detail| detail.get("message"))
+                        .and_then(serde_json::Value::as_str)
+                })
+                .map(str::to_string)
+        })
+}
+
 #[tauri::command]
 pub async fn docker_test_connection(
     state: State<'_, Arc<AppState>>,
     connection_id: String,
 ) -> Result<dbx_core::docker::DockerConnectionInfo, String> {
     dbx_core::docker::docker_test_connection_core(&state, &connection_id).await
+}
+
+#[tauri::command]
+pub async fn docker_get_engine_details(
+    state: State<'_, Arc<AppState>>,
+    connection_id: String,
+) -> Result<dbx_core::docker::DockerEngineDetails, String> {
+    dbx_core::docker::docker_get_engine_details_core(&state, &connection_id).await
 }
 
 #[tauri::command]
@@ -197,6 +270,97 @@ pub async fn docker_export_image_to_path(
 }
 
 #[tauri::command]
+pub async fn docker_start_image_export(
+    app: AppHandle,
+    state: State<'_, Arc<AppState>>,
+    session_id: String,
+    connection_id: String,
+    image_id: String,
+    destination_path: String,
+) -> Result<(), String> {
+    if destination_path.trim().is_empty() {
+        return Err("Image export destination is required".to_string());
+    }
+    let (cancel_sender, mut cancelled) = watch::channel(false);
+    docker_streams().lock().await.insert(session_id.clone(), cancel_sender);
+    let app_state = state.inner().clone();
+    let task_session_id = session_id.clone();
+    tauri::async_runtime::spawn(async move {
+        let destination = std::path::PathBuf::from(&destination_path);
+        let mut written = 0u64;
+        let mut bytes_total = None;
+        let result = async {
+            let response =
+                dbx_core::docker::docker_export_image_response_core(&app_state, &connection_id, &image_id).await?;
+            let total = response.content_length();
+            bytes_total = total;
+            emit_transfer(&app, &task_session_id, "export", "download", &image_id, "running", 0, total, None, None);
+            let mut stream = response.bytes_stream();
+            let mut file = tokio::fs::File::create(&destination)
+                .await
+                .map_err(|error| format!("Failed to create image export file: {error}"))?;
+            loop {
+                let chunk = tokio::select! {
+                    changed = cancelled.changed() => {
+                        if changed.is_err() || *cancelled.borrow() {
+                            return Err("__cancelled__".to_string());
+                        }
+                        continue;
+                    }
+                    chunk = stream.next() => {
+                        let Some(chunk) = chunk else { break; };
+                        chunk
+                    }
+                };
+                let chunk = chunk.map_err(|error| format!("Docker image export failed: {error}"))?;
+                file.write_all(&chunk).await.map_err(|error| format!("Failed to write image export: {error}"))?;
+                written += chunk.len() as u64;
+                emit_transfer(
+                    &app,
+                    &task_session_id,
+                    "export",
+                    "download",
+                    &image_id,
+                    "running",
+                    written,
+                    total,
+                    None,
+                    None,
+                );
+            }
+            file.flush().await.map_err(|error| format!("Failed to finish image export: {error}"))?;
+            Ok::<(), String>(())
+        }
+        .await;
+        let (status, error) = match result {
+            Ok(()) => ("done", None),
+            Err(error) if error == "__cancelled__" => {
+                let _ = tokio::fs::remove_file(&destination).await;
+                ("cancelled", None)
+            }
+            Err(error) => {
+                let _ = tokio::fs::remove_file(&destination).await;
+                ("error", Some(error))
+            }
+        };
+        emit_transfer(
+            &app,
+            &task_session_id,
+            "export",
+            "download",
+            &image_id,
+            status,
+            written,
+            bytes_total,
+            None,
+            error,
+        );
+        docker_streams().lock().await.remove(&task_session_id);
+    });
+    Ok(())
+}
+
+#[tauri::command]
 pub async fn docker_start_logs(
     app: AppHandle,
     state: State<'_, Arc<AppState>>,
@@ -276,6 +440,9 @@ pub async fn docker_pull_image(
     let app_state = state.inner().clone();
     let task_session_id = session_id.clone();
     tauri::async_runtime::spawn(async move {
+        let mut transferred = 0u64;
+        let mut was_cancelled = false;
+        emit_transfer(&app, &task_session_id, "pull", "download", &image, "running", 0, None, None, None);
         let result = async {
             let response =
                 dbx_core::docker::docker_pull_image_response_core(&app_state, &connection_id, &image, auth).await?;
@@ -284,6 +451,7 @@ pub async fn docker_pull_image(
                 let chunk = tokio::select! {
                     changed = cancelled.changed() => {
                         if changed.is_err() || *cancelled.borrow() {
+                            was_cancelled = true;
                             break;
                         }
                         continue;
@@ -296,6 +464,22 @@ pub async fn docker_pull_image(
                     }
                 };
                 let chunk = chunk.map_err(|error| format!("Docker image pull failed: {error}"))?;
+                if let Some(error) = docker_json_stream_error(&chunk) {
+                    return Err(format!("Docker image pull failed: {error}"));
+                }
+                transferred += chunk.len() as u64;
+                emit_transfer(
+                    &app,
+                    &task_session_id,
+                    "pull",
+                    "download",
+                    &image,
+                    "running",
+                    transferred,
+                    None,
+                    Some(String::from_utf8_lossy(&chunk).into_owned()),
+                    None,
+                );
                 let _ = app.emit(
                     "docker-image-pull",
                     DockerStreamEvent {
@@ -310,6 +494,24 @@ pub async fn docker_pull_image(
         }
         .await;
         let error = result.err();
+        emit_transfer(
+            &app,
+            &task_session_id,
+            "pull",
+            "download",
+            &image,
+            if was_cancelled {
+                "cancelled"
+            } else if error.is_some() {
+                "error"
+            } else {
+                "done"
+            },
+            transferred,
+            None,
+            None,
+            error.clone(),
+        );
         let _ = app.emit(
             "docker-image-pull",
             DockerStreamEvent { session_id: task_session_id.clone(), chunk: String::new(), done: true, error },
@@ -317,6 +519,83 @@ pub async fn docker_pull_image(
         docker_streams().lock().await.remove(&task_session_id);
     });
     Ok(())
+}
+
+#[tauri::command]
+pub async fn docker_push_image(
+    app: AppHandle,
+    state: State<'_, Arc<AppState>>,
+    session_id: String,
+    connection_id: String,
+    source_image_id: String,
+    target_reference: String,
+    auth: Option<dbx_core::docker::DockerRegistryAuth>,
+) -> Result<(), String> {
+    let (cancel_sender, mut cancelled) = watch::channel(false);
+    docker_streams().lock().await.insert(session_id.clone(), cancel_sender);
+    let app_state = state.inner().clone();
+    let task_session_id = session_id.clone();
+    tauri::async_runtime::spawn(async move {
+        emit_transfer(&app, &task_session_id, "push", "upload", &target_reference, "running", 0, None, None, None);
+        let result = async {
+            let response = dbx_core::docker::docker_push_image_response_core(
+                &app_state,
+                &connection_id,
+                &source_image_id,
+                &target_reference,
+                auth,
+            )
+            .await?;
+            let mut stream = response.bytes_stream();
+            let mut transferred = 0u64;
+            loop {
+                let chunk = tokio::select! {
+                    changed = cancelled.changed() => {
+                        if changed.is_err() || *cancelled.borrow() {
+                            return Err("__cancelled__".to_string());
+                        }
+                        continue;
+                    }
+                    chunk = stream.next() => {
+                        let Some(chunk) = chunk else { break; };
+                        chunk
+                    }
+                };
+                let chunk = chunk.map_err(|error| format!("Docker image push failed: {error}"))?;
+                if let Some(error) = docker_json_stream_error(&chunk) {
+                    return Err(format!("Docker image push failed: {error}"));
+                }
+                transferred += chunk.len() as u64;
+                emit_transfer(
+                    &app,
+                    &task_session_id,
+                    "push",
+                    "upload",
+                    &target_reference,
+                    "running",
+                    transferred,
+                    None,
+                    Some(String::from_utf8_lossy(&chunk).into_owned()),
+                    None,
+                );
+            }
+            Ok::<u64, String>(transferred)
+        }
+        .await;
+        let (status, bytes, error) = match result {
+            Ok(bytes) => ("done", bytes, None),
+            Err(error) if error == "__cancelled__" => ("cancelled", 0, None),
+            Err(error) => ("error", 0, Some(error)),
+        };
+        emit_transfer(&app, &task_session_id, "push", "upload", &target_reference, status, bytes, None, None, error);
+        docker_streams().lock().await.remove(&task_session_id);
+    });
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn docker_stop_transfer(session_id: String) -> Result<bool, String> {
+    docker_stop_stream(session_id).await
 }
 
 #[tauri::command]

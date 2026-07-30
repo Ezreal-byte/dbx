@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 fn null_default<'de, D, T>(deserializer: D) -> Result<T, D::Error>
 where
@@ -18,6 +19,34 @@ pub struct DockerConnectionInfo {
     pub minimum_api_version: Option<String>,
     pub operating_system: Option<String>,
     pub architecture: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DockerEngineSummary {
+    pub engine_version: Option<String>,
+    pub api_version: Option<String>,
+    pub minimum_api_version: Option<String>,
+    pub operating_system: Option<String>,
+    pub architecture: Option<String>,
+    pub kernel_version: Option<String>,
+    pub storage_driver: Option<String>,
+    pub containers: Option<u64>,
+    pub containers_running: Option<u64>,
+    pub containers_paused: Option<u64>,
+    pub containers_stopped: Option<u64>,
+    pub images: Option<u64>,
+    pub docker_root_dir: Option<String>,
+    pub security_options: Vec<String>,
+    pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DockerEngineDetails {
+    pub version: Value,
+    pub info: Value,
+    pub summary: DockerEngineSummary,
 }
 
 #[derive(Debug, Clone, Deserialize)]

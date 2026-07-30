@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::models::connection::{ConnectionConfig, DatabaseType, TransportLayerConfig};
+use std::net::IpAddr;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
@@ -76,6 +77,19 @@ impl DockerAdminConfig {
                 if connection.port == 0 {
                     return Err("Docker port is required".to_string());
                 }
+                if self.protocol == DockerProtocol::Http
+                    && !self.allow_insecure_remote_http
+                    && !is_loopback_host(host)
+                    && !connection
+                        .effective_transport_layers()
+                        .iter()
+                        .any(|layer| matches!(layer, TransportLayerConfig::Ssh(_)))
+                {
+                    return Err(
+                        "Remote Docker HTTP is disabled. Enable insecure remote HTTP explicitly, or use HTTPS or an SSH tunnel."
+                            .to_string(),
+                    );
+                }
             }
             DockerProtocol::Unix => {
                 if !connection.effective_transport_layers().is_empty() {
@@ -96,6 +110,12 @@ impl DockerAdminConfig {
         }
         Ok(())
     }
+}
+
+fn is_loopback_host(host: &str) -> bool {
+    let normalized = host.trim().trim_matches(['[', ']']);
+    normalized.eq_ignore_ascii_case("localhost")
+        || normalized.parse::<IpAddr>().map(|address| address.is_loopback()).unwrap_or(false)
 }
 
 pub(crate) fn validate_socket_path(path: &str) -> Result<(), String> {
@@ -149,11 +169,17 @@ mod tests {
     }
 
     #[test]
-    fn allows_remote_plain_http_with_warning_handled_by_ui() {
+    fn rejects_remote_plain_http_without_explicit_opt_in() {
         let mut connection = docker_connection();
         connection.host = "docker.example.com".to_string();
         connection.port = 2375;
         connection.external_config = Some(serde_json::json!({"protocol": "http"}));
+        assert!(DockerAdminConfig::from_connection(&connection).is_err());
+
+        connection.external_config = Some(serde_json::json!({
+            "protocol": "http",
+            "allowInsecureRemoteHttp": true
+        }));
         assert!(DockerAdminConfig::from_connection(&connection).is_ok());
     }
 

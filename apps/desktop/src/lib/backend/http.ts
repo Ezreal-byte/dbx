@@ -191,6 +191,7 @@ import { safeLocalStorageGet, safeLocalStorageSet } from "@/lib/backend/safeStor
 import { normalizeConnectionTestResult } from "@/lib/connection/connectionDatabaseInfo";
 import type {
   DockerConnectionInfo,
+  DockerEngineDetails,
   DockerContainer,
   DockerContainerAction,
   DockerContainerStats,
@@ -209,6 +210,7 @@ import type {
   DockerRegistryAuth,
   DockerStreamEvent,
   DockerStreamHandle,
+  DockerTransferProgress,
   DockerVolume,
 } from "@/types/docker";
 
@@ -3282,6 +3284,10 @@ export function dockerTestConnection(connectionId: string): Promise<DockerConnec
   return post("/api/docker/test-connection", { connectionId });
 }
 
+export function dockerGetEngineDetails(connectionId: string): Promise<DockerEngineDetails> {
+  return post("/api/docker/engine/details", { connectionId });
+}
+
 export function dockerListContainers(connectionId: string, all = true): Promise<DockerContainer[]> {
   return post("/api/docker/containers/list", { connectionId, all });
 }
@@ -3368,12 +3374,7 @@ function dockerStreamSessionId(): string {
   return globalThis.crypto?.randomUUID?.() ?? `docker-${Date.now()}-${Math.random().toString(16).slice(2)}`;
 }
 
-async function consumeDockerEventStream(
-  response: Response,
-  sessionId: string,
-  signal: AbortSignal,
-  onEvent: (event: DockerStreamEvent) => void,
-): Promise<void> {
+async function consumeDockerEventStream(response: Response, sessionId: string, signal: AbortSignal, onEvent: (event: DockerStreamEvent) => void): Promise<void> {
   if (!response.ok) throw new Error(await response.text());
   if (!response.body) throw new Error("Streaming response body is unavailable");
   const reader = response.body.getReader();
@@ -3408,10 +3409,7 @@ async function consumeDockerEventStream(
   if (!signal.aborted) onEvent({ sessionId, chunk: "", done: true });
 }
 
-async function startDockerHttpStream(
-  request: (signal: AbortSignal) => Promise<Response>,
-  onEvent: (event: DockerStreamEvent) => void,
-): Promise<DockerStreamHandle> {
+async function startDockerHttpStream(request: (signal: AbortSignal) => Promise<Response>, onEvent: (event: DockerStreamEvent) => void): Promise<DockerStreamHandle> {
   const sessionId = dockerStreamSessionId();
   const controller = new AbortController();
   const response = await request(controller.signal);
@@ -3426,12 +3424,7 @@ async function startDockerHttpStream(
   };
 }
 
-export function dockerStartLogs(
-  connectionId: string,
-  containerId: string,
-  options: DockerLogOptions,
-  onEvent: (event: DockerStreamEvent) => void,
-): Promise<DockerStreamHandle> {
+export function dockerStartLogs(connectionId: string, containerId: string, options: DockerLogOptions, onEvent: (event: DockerStreamEvent) => void): Promise<DockerStreamHandle> {
   const query = qs({
     connectionId,
     containerId,
@@ -3441,12 +3434,7 @@ export function dockerStartLogs(
   return startDockerHttpStream((signal) => fetch(apiUrl(`/api/docker/containers/logs/stream?${query}`), { signal }), onEvent);
 }
 
-export function dockerPullImage(
-  connectionId: string,
-  image: string,
-  auth: DockerRegistryAuth | undefined,
-  onEvent: (event: DockerStreamEvent) => void,
-): Promise<DockerStreamHandle> {
+export function dockerPullImage(connectionId: string, image: string, auth: DockerRegistryAuth | undefined, onEvent: (event: DockerStreamEvent) => void): Promise<DockerStreamHandle> {
   return startDockerHttpStream(
     (signal) =>
       fetch(apiUrl("/api/docker/images/pull"), {
@@ -3457,6 +3445,122 @@ export function dockerPullImage(
       }),
     onEvent,
   );
+}
+
+export function dockerPushImage(connectionId: string, sourceImageId: string, targetReference: string, auth: DockerRegistryAuth | undefined, onEvent: (event: DockerTransferProgress) => void): Promise<DockerStreamHandle> {
+  let transferred = 0;
+  return startDockerHttpStream(
+    (signal) =>
+      fetch(apiUrl("/api/docker/images/push"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ connectionId, sourceImageId, targetReference, auth }),
+        signal,
+      }),
+    (event) => {
+      transferred += new TextEncoder().encode(event.chunk || "").byteLength;
+      let streamError = event.error || undefined;
+      for (const line of (event.chunk || "").split(/\r?\n/).filter(Boolean)) {
+        try {
+          const value = JSON.parse(line);
+          streamError ||= value.error || value.errorDetail?.message;
+        } catch {
+          // Docker progress chunks can be split across SSE events.
+        }
+      }
+      onEvent({
+        sessionId: event.sessionId,
+        kind: "push",
+        direction: "upload",
+        image: targetReference,
+        status: streamError ? "error" : event.done ? "done" : "running",
+        bytesCompleted: transferred,
+        message: event.chunk,
+        error: streamError,
+      });
+    },
+  );
+}
+
+export async function dockerStartImageExport(connectionId: string, imageId: string, fileName: string, _destinationPath: string | undefined, onEvent: (event: DockerTransferProgress) => void): Promise<DockerStreamHandle> {
+  const sessionId = dockerStreamSessionId();
+  const controller = new AbortController();
+  let writable: any;
+  const picker = (globalThis as any).showSaveFilePicker;
+  if (typeof picker === "function") {
+    const handle = await picker({
+      suggestedName: fileName,
+      types: [{ description: "Docker image", accept: { "application/x-tar": [".tar"] } }],
+    });
+    writable = await handle.createWritable();
+  }
+  const response = await fetch(apiUrl("/api/docker/images/export"), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ connectionId, imageId }),
+    signal: controller.signal,
+  });
+  if (!response.ok) throw new Error(await response.text());
+  if (!response.body) throw new Error("Streaming response body is unavailable");
+  const totalHeader = response.headers.get("content-length");
+  const bytesTotal = totalHeader ? Number(totalHeader) : undefined;
+  const chunks: Uint8Array[] = [];
+  void (async () => {
+    let bytesCompleted = 0;
+    try {
+      const reader = response.body!.getReader();
+      while (!controller.signal.aborted) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        bytesCompleted += value.byteLength;
+        if (writable) await writable.write(value);
+        else chunks.push(value);
+        onEvent({
+          sessionId,
+          kind: "export",
+          direction: "download",
+          image: imageId,
+          status: "running",
+          bytesCompleted,
+          bytesTotal,
+        });
+      }
+      if (controller.signal.aborted) {
+        await writable?.abort?.();
+        onEvent({ sessionId, kind: "export", direction: "download", image: imageId, status: "cancelled", bytesCompleted, bytesTotal });
+        return;
+      }
+      if (writable) await writable.close();
+      else {
+        const blob = new Blob(
+          chunks.map((chunk) => chunk.slice().buffer),
+          { type: "application/x-tar" },
+        );
+        const url = URL.createObjectURL(blob);
+        const anchor = document.createElement("a");
+        anchor.href = url;
+        anchor.download = fileName;
+        anchor.click();
+        URL.revokeObjectURL(url);
+      }
+      onEvent({ sessionId, kind: "export", direction: "download", image: imageId, status: "done", bytesCompleted, bytesTotal });
+    } catch (error) {
+      await writable?.abort?.().catch?.(() => undefined);
+      if (!controller.signal.aborted) {
+        onEvent({
+          sessionId,
+          kind: "export",
+          direction: "download",
+          image: imageId,
+          status: "error",
+          bytesCompleted,
+          bytesTotal,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+  })();
+  return { sessionId, stop: async () => controller.abort() };
 }
 
 export * from "@/lib/backend/mq-http";

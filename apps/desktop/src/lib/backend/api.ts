@@ -356,6 +356,7 @@ export const nacosLoginRNacosConsole = forward("nacosLoginRNacosConsole");
 
 // Docker
 export const dockerTestConnection = forward("dockerTestConnection");
+export const dockerGetEngineDetails = forward("dockerGetEngineDetails");
 export const dockerListContainers = forward("dockerListContainers");
 export const dockerListImages = forward("dockerListImages");
 export const dockerListVolumes = forward("dockerListVolumes");
@@ -368,6 +369,8 @@ export const dockerApplyCompose = forward("dockerApplyCompose");
 export const dockerRemoveContainer = forward("dockerRemoveContainer");
 export const dockerStartLogs = forward("dockerStartLogs");
 export const dockerPullImage = forward("dockerPullImage");
+export const dockerPushImage = forward("dockerPushImage");
+export const dockerStartImageExport = forward("dockerStartImageExport");
 export const dockerListContainerFiles = forward("dockerListContainerFiles");
 export const dockerPreviewContainerFile = forward("dockerPreviewContainerFile");
 export const dockerDownloadContainerFile = forward("dockerDownloadContainerFile");

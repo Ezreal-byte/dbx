@@ -545,6 +545,7 @@ async fn main() {
         // Nacos
         .route("/nacos/test-connection", post(routes::nacos::test_connection))
         .route("/docker/test-connection", post(routes::docker::test_connection))
+        .route("/docker/engine/details", post(routes::docker::engine_details))
         .route("/docker/containers/list", post(routes::docker::list_containers))
         .route("/docker/images/list", post(routes::docker::list_images))
         .route("/docker/volumes/list", post(routes::docker::list_volumes))
@@ -560,6 +561,7 @@ async fn main() {
         .route("/docker/containers/files/preview", post(routes::docker::preview_container_file))
         .route("/docker/containers/files/download", post(routes::docker::download_container_file))
         .route("/docker/images/pull", post(routes::docker::pull_image))
+        .route("/docker/images/push", post(routes::docker::push_image))
         .route("/docker/images/remove", post(routes::docker::remove_image))
         .route("/docker/images/export", post(routes::docker::export_image))
         .route("/docker/volumes/create", post(routes::docker::create_volume))

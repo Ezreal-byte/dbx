@@ -15,6 +15,30 @@ export interface DockerConnectionInfo {
   architecture?: string | null;
 }
 
+export interface DockerEngineSummary {
+  engineVersion?: string | null;
+  apiVersion?: string | null;
+  minimumApiVersion?: string | null;
+  operatingSystem?: string | null;
+  architecture?: string | null;
+  kernelVersion?: string | null;
+  storageDriver?: string | null;
+  containers?: number | null;
+  containersRunning?: number | null;
+  containersPaused?: number | null;
+  containersStopped?: number | null;
+  images?: number | null;
+  dockerRootDir?: string | null;
+  securityOptions: string[];
+  warnings: string[];
+}
+
+export interface DockerEngineDetails {
+  version: Record<string, unknown>;
+  info: Record<string, unknown>;
+  summary: DockerEngineSummary;
+}
+
 export interface DockerPort {
   ip?: string | null;
   privatePort: number;
@@ -178,4 +202,18 @@ export interface DockerStreamEvent {
 export interface DockerStreamHandle {
   sessionId: string;
   stop: () => Promise<void>;
+}
+
+export interface DockerTransferProgress {
+  sessionId: string;
+  kind: "pull" | "push" | "export";
+  direction: "download" | "upload";
+  image: string;
+  status: "running" | "done" | "error" | "cancelled";
+  bytesCompleted: number;
+  bytesTotal?: number | null;
+  layersCompleted?: number | null;
+  layersTotal?: number | null;
+  message?: string | null;
+  error?: string | null;
 }

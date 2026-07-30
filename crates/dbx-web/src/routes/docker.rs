@@ -87,6 +87,15 @@ pub(crate) struct PullImageRequest {
 
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub(crate) struct PushImageRequest {
+    connection_id: String,
+    source_image_id: String,
+    target_reference: String,
+    auth: Option<dbx_core::docker::DockerRegistryAuth>,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct CreateVolumeRequest {
     connection_id: String,
     request: dbx_core::docker::DockerCreateVolumeRequest,
@@ -128,6 +137,17 @@ pub async fn test_connection(
 ) -> Result<Json<dbx_core::docker::DockerConnectionInfo>, AppError> {
     Ok(Json(
         dbx_core::docker::docker_test_connection_core(&state.app, &request.connection_id)
+            .await
+            .map_err(AppError::from)?,
+    ))
+}
+
+pub async fn engine_details(
+    State(state): State<Arc<WebState>>,
+    Json(request): Json<ConnectionRequest>,
+) -> Result<Json<dbx_core::docker::DockerEngineDetails>, AppError> {
+    Ok(Json(
+        dbx_core::docker::docker_get_engine_details_core(&state.app, &request.connection_id)
             .await
             .map_err(AppError::from)?,
     ))
@@ -309,11 +329,17 @@ pub async fn export_image(
         dbx_core::docker::docker_export_image_response_core(&state.app, &request.connection_id, &request.image_id)
             .await
             .map_err(AppError::from)?;
+    let content_length = upstream.content_length();
     let mut response = Body::from_stream(upstream.bytes_stream()).into_response();
     response.headers_mut().insert(header::CONTENT_TYPE, HeaderValue::from_static("application/x-tar"));
     response
         .headers_mut()
         .insert(header::CONTENT_DISPOSITION, HeaderValue::from_static("attachment; filename=\"docker-image.tar\""));
+    if let Some(content_length) = content_length {
+        if let Ok(value) = HeaderValue::from_str(&content_length.to_string()) {
+            response.headers_mut().insert(header::CONTENT_LENGTH, value);
+        }
+    }
     Ok(response)
 }
 
@@ -374,6 +400,30 @@ pub async fn pull_image(
         &state.app,
         &request.connection_id,
         &request.image,
+        request.auth,
+    )
+    .await
+    .map_err(AppError::from)?;
+    let stream = response.bytes_stream().map(|item| {
+        let event = match item {
+            Ok(chunk) => Event::default().event("progress").data(String::from_utf8_lossy(&chunk).into_owned()),
+            Err(error) => Event::default().event("error").data(error.to_string()),
+        };
+        Ok::<_, Infallible>(event)
+    });
+    Ok(Sse::new(stream).keep_alive(KeepAlive::default()))
+}
+
+pub async fn push_image(
+    State(state): State<Arc<WebState>>,
+    Json(request): Json<PushImageRequest>,
+) -> Result<Sse<impl futures::Stream<Item = Result<Event, Infallible>>>, AppError> {
+    ensure_web_writes_enabled(&state)?;
+    let response = dbx_core::docker::docker_push_image_response_core(
+        &state.app,
+        &request.connection_id,
+        &request.source_image_id,
+        &request.target_reference,
         request.auth,
     )
     .await

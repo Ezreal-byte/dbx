@@ -54,6 +54,10 @@ impl DockerClient {
         self.get(path).await
     }
 
+    pub async fn get_unversioned_value(&self, path: &str) -> Result<Value, String> {
+        request_json_with(&self.client, Method::GET, &format!("{}{}", self.base_url, path), None).await
+    }
+
     pub async fn post_empty(&self, path: &str) -> Result<(), String> {
         request_empty_with(&self.client, Method::POST, &self.endpoint(path)).await
     }

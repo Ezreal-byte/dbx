@@ -1693,7 +1693,7 @@ export const useQueryStore = defineStore("query", () => {
     const id = uuid();
     const tab: QueryTab = {
       id,
-      title: `${conn?.name || "Docker"} Workbench`,
+      title: conn?.name || "Docker",
       connectionId,
       database: "",
       sql: "",

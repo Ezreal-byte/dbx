@@ -41,6 +41,41 @@ pub async fn docker_test_connection_core(
     Ok(connection_info(version))
 }
 
+pub async fn docker_get_engine_details_core(
+    state: &AppState,
+    connection_id: &str,
+) -> Result<DockerEngineDetails, String> {
+    let (_, client, _) = connection_and_client(state, connection_id).await?;
+    let (version, info) = tokio::try_join!(client.get_unversioned_value("/version"), client.get_value("/info"))?;
+    let string = |value: &Value, key: &str| value.get(key).and_then(Value::as_str).map(str::to_string);
+    let number = |value: &Value, key: &str| value.get(key).and_then(Value::as_u64);
+    let strings = |value: &Value, key: &str| {
+        value
+            .get(key)
+            .and_then(Value::as_array)
+            .map(|items| items.iter().filter_map(Value::as_str).map(str::to_string).collect())
+            .unwrap_or_default()
+    };
+    let summary = DockerEngineSummary {
+        engine_version: string(&version, "Version"),
+        api_version: string(&version, "ApiVersion"),
+        minimum_api_version: string(&version, "MinAPIVersion"),
+        operating_system: string(&info, "OperatingSystem").or_else(|| string(&version, "Os")),
+        architecture: string(&info, "Architecture").or_else(|| string(&version, "Arch")),
+        kernel_version: string(&info, "KernelVersion"),
+        storage_driver: string(&info, "Driver"),
+        containers: number(&info, "Containers"),
+        containers_running: number(&info, "ContainersRunning"),
+        containers_paused: number(&info, "ContainersPaused"),
+        containers_stopped: number(&info, "ContainersStopped"),
+        images: number(&info, "Images"),
+        docker_root_dir: string(&info, "DockerRootDir"),
+        security_options: strings(&info, "SecurityOptions"),
+        warnings: strings(&info, "Warnings"),
+    };
+    Ok(DockerEngineDetails { version, info, summary })
+}
+
 pub async fn docker_test_connection_config_core(
     state: &AppState,
     connection_id: &str,
@@ -395,9 +430,15 @@ pub async fn docker_pull_image_response_core(
     let (connection, client, _) = connection_and_client(state, connection_id).await?;
     ensure_writable(&connection, "image pull")?;
     let image = validate_resource_name(image, "Image reference")?;
-    let registry_auth = auth
-        .filter(|auth| !auth.username.is_empty() || !auth.password.is_empty() || !auth.server_address.is_empty())
-        .map(|auth| {
+    let registry_auth = encode_registry_auth(auth);
+    client
+        .request_stream(Method::POST, &format!("/images/create?fromImage={}", encoded_id(&image)), None, registry_auth)
+        .await
+}
+
+fn encode_registry_auth(auth: Option<DockerRegistryAuth>) -> Option<String> {
+    auth.filter(|auth| !auth.username.is_empty() || !auth.password.is_empty() || !auth.server_address.is_empty()).map(
+        |auth| {
             base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(
                 serde_json::to_vec(&serde_json::json!({
                     "username": auth.username,
@@ -406,9 +447,51 @@ pub async fn docker_pull_image_response_core(
                 }))
                 .unwrap_or_default(),
             )
-        });
+        },
+    )
+}
+
+pub async fn docker_push_image_response_core(
+    state: &AppState,
+    connection_id: &str,
+    source_image_id: &str,
+    target_reference: &str,
+    auth: Option<DockerRegistryAuth>,
+) -> Result<reqwest::Response, String> {
+    let (connection, client, _) = connection_and_client(state, connection_id).await?;
+    ensure_writable(&connection, "image push")?;
+    let source = validate_resource_name(source_image_id, "Source image")?;
+    let target = validate_resource_name(target_reference, "Target image reference")?;
+    let slash = target.rfind('/').unwrap_or(0);
+    let colon = target.rfind(':').filter(|index| *index > slash);
+    let (repository, tag) = match colon {
+        Some(index) => (&target[..index], &target[index + 1..]),
+        None => (target.as_str(), "latest"),
+    };
+    if repository.is_empty() || tag.is_empty() {
+        return Err("Target image reference must contain a repository and a valid tag".to_string());
+    }
     client
-        .request_stream(Method::POST, &format!("/images/create?fromImage={}", encoded_id(&image)), None, registry_auth)
+        .post_empty(&format!(
+            "/images/{}/tag?repo={}&tag={}",
+            encoded_id(&source),
+            encoded_id(repository),
+            encoded_id(tag)
+        ))
+        .await?;
+    log::info!(
+        "Docker image push started: connection_id={} source_image_id={} target={}",
+        connection_id,
+        source,
+        target
+    );
+    client
+        .request_stream(
+            Method::POST,
+            &format!("/images/{}/push?tag={}", encoded_id(repository), encoded_id(tag)),
+            None,
+            encode_registry_auth(auth),
+        )
         .await
 }
 

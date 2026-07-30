@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import type {
   DockerConnectionInfo,
+  DockerEngineDetails,
   DockerContainer,
   DockerContainerAction,
   DockerContainerStats,
@@ -20,11 +21,16 @@ import type {
   DockerRegistryAuth,
   DockerStreamEvent,
   DockerStreamHandle,
+  DockerTransferProgress,
   DockerVolume,
 } from "@/types/docker";
 
 export function dockerTestConnection(connectionId: string): Promise<DockerConnectionInfo> {
   return invoke("docker_test_connection", { connectionId });
+}
+
+export function dockerGetEngineDetails(connectionId: string): Promise<DockerEngineDetails> {
+  return invoke("docker_get_engine_details", { connectionId });
 }
 
 export function dockerListContainers(connectionId: string, all = true): Promise<DockerContainer[]> {
@@ -103,12 +109,7 @@ function streamSessionId(): string {
   return globalThis.crypto?.randomUUID?.() ?? `docker-${Date.now()}-${Math.random().toString(16).slice(2)}`;
 }
 
-async function startTauriStream(
-  eventName: "docker-log-stream" | "docker-image-pull",
-  command: "docker_start_logs" | "docker_pull_image",
-  payload: Record<string, unknown>,
-  onEvent: (event: DockerStreamEvent) => void,
-): Promise<DockerStreamHandle> {
+async function startTauriStream(eventName: "docker-log-stream" | "docker-image-pull", command: "docker_start_logs" | "docker_pull_image", payload: Record<string, unknown>, onEvent: (event: DockerStreamEvent) => void): Promise<DockerStreamHandle> {
   const sessionId = streamSessionId();
   let stopped = false;
   const unlisten = await listen<DockerStreamEvent>(eventName, (event) => {
@@ -136,20 +137,67 @@ async function startTauriStream(
   };
 }
 
-export function dockerStartLogs(
-  connectionId: string,
-  containerId: string,
-  options: DockerLogOptions,
-  onEvent: (event: DockerStreamEvent) => void,
-): Promise<DockerStreamHandle> {
+export function dockerStartLogs(connectionId: string, containerId: string, options: DockerLogOptions, onEvent: (event: DockerStreamEvent) => void): Promise<DockerStreamHandle> {
   return startTauriStream("docker-log-stream", "docker_start_logs", { connectionId, containerId, options }, onEvent);
 }
 
-export function dockerPullImage(
-  connectionId: string,
-  image: string,
-  auth: DockerRegistryAuth | undefined,
-  onEvent: (event: DockerStreamEvent) => void,
-): Promise<DockerStreamHandle> {
+export function dockerPullImage(connectionId: string, image: string, auth: DockerRegistryAuth | undefined, onEvent: (event: DockerStreamEvent) => void): Promise<DockerStreamHandle> {
   return startTauriStream("docker-image-pull", "docker_pull_image", { connectionId, image, auth }, onEvent);
+}
+
+export async function dockerPushImage(connectionId: string, sourceImageId: string, targetReference: string, auth: DockerRegistryAuth | undefined, onEvent: (event: DockerTransferProgress) => void): Promise<DockerStreamHandle> {
+  const sessionId = streamSessionId();
+  let stopped = false;
+  const unlisten = await listen<DockerTransferProgress>("docker-transfer-progress", (event) => {
+    if (event.payload.sessionId !== sessionId) return;
+    onEvent(event.payload);
+    if (event.payload.status !== "running") {
+      stopped = true;
+      unlisten();
+    }
+  });
+  try {
+    await invoke("docker_push_image", { connectionId, sourceImageId, targetReference, auth, sessionId });
+  } catch (error) {
+    unlisten();
+    throw error;
+  }
+  return {
+    sessionId,
+    stop: async () => {
+      if (stopped) return;
+      stopped = true;
+      unlisten();
+      await invoke("docker_stop_transfer", { sessionId });
+    },
+  };
+}
+
+export async function dockerStartImageExport(connectionId: string, imageId: string, fileName: string, destinationPath: string | undefined, onEvent: (event: DockerTransferProgress) => void): Promise<DockerStreamHandle> {
+  if (!destinationPath) throw new Error(`A destination is required for ${fileName}`);
+  const sessionId = streamSessionId();
+  let stopped = false;
+  const unlisten = await listen<DockerTransferProgress>("docker-transfer-progress", (event) => {
+    if (event.payload.sessionId !== sessionId) return;
+    onEvent(event.payload);
+    if (event.payload.status !== "running") {
+      stopped = true;
+      unlisten();
+    }
+  });
+  try {
+    await invoke("docker_start_image_export", { connectionId, imageId, destinationPath, sessionId });
+  } catch (error) {
+    unlisten();
+    throw error;
+  }
+  return {
+    sessionId,
+    stop: async () => {
+      if (stopped) return;
+      stopped = true;
+      unlisten();
+      await invoke("docker_stop_transfer", { sessionId });
+    },
+  };
 }

@@ -5501,9 +5501,17 @@ function openExternalUrl(url: string) {
                   </template>
                   <div v-if="dockerProtocol === 'http'" class="grid grid-cols-4 items-start gap-4">
                     <span />
-                    <p class="col-span-3 m-0 rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-300">
-                      {{ t("docker.remoteHttpWarning") }}
-                    </p>
+                    <div class="col-span-3 flex items-start gap-3 rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2">
+                      <Switch v-model="dockerAllowInsecureRemoteHttp" class="mt-0.5 shrink-0" />
+                      <div class="min-w-0">
+                        <Label class="cursor-pointer text-xs font-medium text-amber-800 dark:text-amber-200">
+                          {{ t("docker.allowInsecureRemoteHttp") }}
+                        </Label>
+                        <p class="mt-1 text-xs text-amber-700 dark:text-amber-300">
+                          {{ t("docker.remoteHttpWarning") }}
+                        </p>
+                      </div>
+                    </div>
                   </div>
                 </template>
 
