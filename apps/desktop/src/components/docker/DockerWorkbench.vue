@@ -759,12 +759,15 @@ async function exportImage(item: DockerImage) {
   imageActionInFlight.value = { ...imageActionInFlight.value, [item.id]: "export" };
   transferOpen.value = true;
   try {
-    const baseName = (item.repoTags[0] || shortId(item.id)).replace(/[\\/:*?"<>|]+/g, "_");
+    const taggedReference = item.repoTags.find((tag) => tag && tag !== "<none>:<none>");
+    const exportReference = taggedReference || item.id;
+    const baseName = (taggedReference || shortId(item.id)).replace(/[\\/:*?"<>|]+/g, "_");
+    const fileName = `${baseName}.tar`;
     let destination: string | undefined;
     if (isTauriRuntime()) {
       const { save } = await import("@tauri-apps/plugin-dialog");
       const selectedDestination = await save({
-        defaultPath: `${baseName}.tar`,
+        defaultPath: fileName,
         filters: [{ name: "Docker image", extensions: ["tar"] }],
       });
       if (!selectedDestination) {
@@ -774,7 +777,7 @@ async function exportImage(item: DockerImage) {
       destination = selectedDestination;
     }
     let startedStream: DockerStreamHandle | undefined;
-    const stream = await api.dockerStartImageExport(props.connection.id, item.id, `${baseName}.tar`, destination, (progress) => {
+    const stream = await api.dockerStartImageExport(props.connection.id, exportReference, fileName, destination, (progress) => {
       upsertTransfer(progress, startedStream);
       if (progress.status === "done") {
         imageActionInFlight.value = { ...imageActionInFlight.value, [item.id]: undefined };
@@ -847,6 +850,7 @@ async function startImageLoad(source: string | File) {
       upsertTransfer(progress, startedStream);
       if (progress.status === "done") {
         toast(t("docker.imageLoaded"), 2400);
+        query.value = "";
         void loadResource("images");
       } else if (progress.status === "error") {
         toast(progress.error || t("docker.transferFailed"), 5000);
@@ -1048,16 +1052,6 @@ async function openFile(entry: DockerFileEntry) {
     fileError.value = cause?.message || String(cause);
   } finally {
     fileLoading.value = false;
-  }
-}
-
-async function downloadFile(entry: DockerFileEntry) {
-  if (!selectedContainer.value) return;
-  try {
-    const bytes = await api.dockerDownloadContainerFile(props.connection.id, selectedContainer.value.id, entry.path);
-    downloadBytes(bytes, entry.name);
-  } catch (cause: any) {
-    toast(cause?.message || String(cause), 5000);
   }
 }
 
@@ -1333,7 +1327,6 @@ onUnmounted(() => {
                   <File v-else class="h-4 w-4 text-sky-500" />
                   <span class="min-w-0 flex-1 truncate">{{ entry.name }}</span>
                   <span class="text-xs tabular-nums text-muted-foreground">{{ entry.kind === "directory" ? "" : formatBytes(entry.size) }}</span>
-                  <Button v-if="entry.kind === 'file'" size="icon-sm" variant="ghost" @click.stop="downloadFile(entry)"><Download /></Button>
                 </button>
               </div>
             </div>
@@ -1600,10 +1593,22 @@ onUnmounted(() => {
             </thead>
             <tbody>
               <tr v-for="item in filteredVolumes" :key="item.name">
-                <td class="font-medium">{{ item.name }}</td>
-                <td>{{ item.driver }}</td>
-                <td>{{ item.scope }}</td>
-                <td class="font-mono text-xs">{{ item.mountpoint }}</td>
+                <td class="font-medium">
+                  <LightTooltip :text="item.name">
+                    <div class="docker-truncated-cell">{{ item.name }}</div>
+                  </LightTooltip>
+                </td>
+                <td>
+                  <div class="docker-truncated-cell">{{ item.driver }}</div>
+                </td>
+                <td>
+                  <div class="docker-truncated-cell">{{ item.scope }}</div>
+                </td>
+                <td class="font-mono text-xs">
+                  <LightTooltip :text="item.mountpoint">
+                    <div class="docker-truncated-cell">{{ item.mountpoint }}</div>
+                  </LightTooltip>
+                </td>
               </tr>
             </tbody>
           </table>

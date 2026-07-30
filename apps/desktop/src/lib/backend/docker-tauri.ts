@@ -186,7 +186,7 @@ export async function dockerStartImageExport(connectionId: string, imageId: stri
     }
   });
   try {
-    await invoke("docker_start_image_export", { connectionId, imageId, destinationPath, sessionId });
+    await invoke("docker_start_image_export", { connectionId, imageId, displayName: fileName, destinationPath, sessionId });
   } catch (error) {
     unlisten();
     throw error;

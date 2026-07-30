@@ -3519,7 +3519,7 @@ export async function dockerStartImageExport(connectionId: string, imageId: stri
           sessionId,
           kind: "export",
           direction: "download",
-          image: imageId,
+          image: fileName,
           status: "running",
           bytesCompleted,
           bytesTotal,
@@ -3527,7 +3527,7 @@ export async function dockerStartImageExport(connectionId: string, imageId: stri
       }
       if (controller.signal.aborted) {
         await writable?.abort?.();
-        onEvent({ sessionId, kind: "export", direction: "download", image: imageId, status: "cancelled", bytesCompleted, bytesTotal });
+        onEvent({ sessionId, kind: "export", direction: "download", image: fileName, status: "cancelled", bytesCompleted, bytesTotal });
         return;
       }
       if (writable) await writable.close();
@@ -3543,7 +3543,7 @@ export async function dockerStartImageExport(connectionId: string, imageId: stri
         anchor.click();
         URL.revokeObjectURL(url);
       }
-      onEvent({ sessionId, kind: "export", direction: "download", image: imageId, status: "done", bytesCompleted, bytesTotal });
+      onEvent({ sessionId, kind: "export", direction: "download", image: fileName, status: "done", bytesCompleted, bytesTotal });
     } catch (error) {
       await writable?.abort?.().catch?.(() => undefined);
       if (!controller.signal.aborted) {
@@ -3551,7 +3551,7 @@ export async function dockerStartImageExport(connectionId: string, imageId: stri
           sessionId,
           kind: "export",
           direction: "download",
-          image: imageId,
+          image: fileName,
           status: "error",
           bytesCompleted,
           bytesTotal,

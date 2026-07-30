@@ -277,6 +277,7 @@ pub async fn docker_start_image_export(
     session_id: String,
     connection_id: String,
     image_id: String,
+    display_name: String,
     destination_path: String,
 ) -> Result<(), String> {
     if destination_path.trim().is_empty() {
@@ -295,7 +296,7 @@ pub async fn docker_start_image_export(
                 dbx_core::docker::docker_export_image_response_core(&app_state, &connection_id, &image_id).await?;
             let total = response.content_length();
             bytes_total = total;
-            emit_transfer(&app, &task_session_id, "export", "download", &image_id, "running", 0, total, None, None);
+            emit_transfer(&app, &task_session_id, "export", "download", &display_name, "running", 0, total, None, None);
             let mut stream = response.bytes_stream();
             let mut file = tokio::fs::File::create(&destination)
                 .await
@@ -321,7 +322,7 @@ pub async fn docker_start_image_export(
                     &task_session_id,
                     "export",
                     "download",
-                    &image_id,
+                    &display_name,
                     "running",
                     written,
                     total,
@@ -349,7 +350,7 @@ pub async fn docker_start_image_export(
             &task_session_id,
             "export",
             "download",
-            &image_id,
+            &display_name,
             status,
             written,
             bytes_total,
