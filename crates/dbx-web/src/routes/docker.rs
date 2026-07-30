@@ -346,7 +346,7 @@ pub async fn stream_logs(
         let event = match item {
             Ok(chunk) => {
                 let decoded = dbx_core::docker::decode_multiplexed_stream_chunk(buffer, &chunk);
-                Event::default().event("chunk").data(String::from_utf8_lossy(&decoded).into_owned())
+                Event::default().event("chunk").data(String::from_utf8_lossy(&decoded))
             }
             Err(error) => Event::default().event("error").data(error.to_string()),
         };
@@ -370,7 +370,7 @@ pub async fn pull_image(
     .map_err(AppError::from)?;
     let stream = response.bytes_stream().map(|item| {
         let event = match item {
-            Ok(chunk) => Event::default().event("progress").data(String::from_utf8_lossy(&chunk).into_owned()),
+            Ok(chunk) => Event::default().event("progress").data(String::from_utf8_lossy(&chunk)),
             Err(error) => Event::default().event("error").data(error.to_string()),
         };
         Ok::<_, Infallible>(event)
@@ -394,7 +394,7 @@ pub async fn push_image(
     .map_err(AppError::from)?;
     let stream = response.bytes_stream().map(|item| {
         let event = match item {
-            Ok(chunk) => Event::default().event("progress").data(String::from_utf8_lossy(&chunk).into_owned()),
+            Ok(chunk) => Event::default().event("progress").data(String::from_utf8_lossy(&chunk)),
             Err(error) => Event::default().event("error").data(error.to_string()),
         };
         Ok::<_, Infallible>(event)

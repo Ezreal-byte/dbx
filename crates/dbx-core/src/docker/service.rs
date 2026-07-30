@@ -560,7 +560,7 @@ async fn docker_exec_output(
 pub fn decode_multiplexed_bytes(bytes: &[u8]) -> Vec<u8> {
     let mut output = Vec::new();
     let mut offset = 0usize;
-    while offset + 8 <= bytes.len() && matches!(bytes[offset], 0 | 1 | 2) {
+    while offset + 8 <= bytes.len() && matches!(bytes[offset], 0..=2) {
         let length =
             u32::from_be_bytes([bytes[offset + 4], bytes[offset + 5], bytes[offset + 6], bytes[offset + 7]]) as usize;
         if offset + 8 + length > bytes.len() {
@@ -583,7 +583,7 @@ pub fn decode_multiplexed_stream_chunk(buffer: &mut Vec<u8>, chunk: &[u8]) -> Ve
         if buffer.is_empty() {
             break;
         }
-        if !matches!(buffer[0], 0 | 1 | 2) {
+        if !matches!(buffer[0], 0..=2) {
             output.append(buffer);
             break;
         }

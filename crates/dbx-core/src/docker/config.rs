@@ -3,20 +3,15 @@ use serde::{Deserialize, Serialize};
 use crate::models::connection::{ConnectionConfig, DatabaseType, TransportLayerConfig};
 use std::net::IpAddr;
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
 pub enum DockerProtocol {
+    #[default]
     Http,
     Https,
     Unix,
     UnixOverNc,
     UnixOverNcSudo,
-}
-
-impl Default for DockerProtocol {
-    fn default() -> Self {
-        Self::Http
-    }
 }
 
 fn default_socket_path() -> String {
