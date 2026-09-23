@@ -340,7 +340,7 @@ watch(databasePageCount, () => setDatabasePage(databasePage.value));
               <span class="min-w-0 flex-1 truncate font-mono">{{ database }}</span>
               <Check v-if="selectedDatabases.includes(database)" class="h-3.5 w-3.5 text-green-600" />
               <Select v-if="selectedDatabases.includes(database)" :model-value="databasePolicyMode(database)" :disabled="disabled || busy" @update:model-value="(value) => $emit('set:database-policy', selectedConnectionId, database, value as ExecutionMode | 'inherit')">
-                <SelectTrigger size="sm" class="h-7 w-36 shrink-0 text-[11px]" @click.stop><SelectValue /></SelectTrigger>
+                <SelectTrigger size="sm" class="h-7 w-44 shrink-0 text-[11px]" @click.stop><SelectValue /></SelectTrigger>
                 <SelectContent>
                   <SelectItem value="inherit">{{ t("settings.mcpConnectionPolicyInherit") }}</SelectItem>
                   <SelectItem value="read_only">{{ t("settings.mcpConnectionPolicyReadOnly") }}</SelectItem>

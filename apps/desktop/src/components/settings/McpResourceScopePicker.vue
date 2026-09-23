@@ -327,7 +327,7 @@ function connectionPolicyMode(connectionId: string): ExecutionMode | "inherit" {
             <p v-if="node.type === 'connection'" class="truncate font-mono text-[10px] text-muted-foreground">{{ node.connection.db_type }} · {{ node.connection.host || node.connection.database || node.id }}</p>
           </div>
           <Select v-if="node.type === 'group' && selectedGroupIds.has(node.id)" :model-value="groupPolicyMode(node.id)" :disabled="disabled || busy" @update:model-value="(value) => emit('set:group-policy', node.id, value as ExecutionMode | 'inherit')">
-            <SelectTrigger size="sm" class="h-7 w-36 shrink-0 text-[11px]" @click.stop><SelectValue /></SelectTrigger>
+            <SelectTrigger size="sm" class="h-7 w-44 shrink-0 text-[11px]" @click.stop><SelectValue /></SelectTrigger>
             <SelectContent>
               <SelectItem value="inherit">{{ t("settings.mcpConnectionPolicyInherit") }}</SelectItem>
               <SelectItem value="read_only">{{ t("settings.mcpConnectionPolicyReadOnly") }}</SelectItem>
@@ -341,7 +341,7 @@ function connectionPolicyMode(connectionId: string): ExecutionMode | "inherit" {
             :disabled="disabled || busy"
             @update:model-value="(value) => emit('set:connection-policy', node.id, value as ExecutionMode | 'inherit')"
           >
-            <SelectTrigger size="sm" class="h-7 w-36 shrink-0 text-[11px]" @click.stop><SelectValue /></SelectTrigger>
+            <SelectTrigger size="sm" class="h-7 w-44 shrink-0 text-[11px]" @click.stop><SelectValue /></SelectTrigger>
             <SelectContent>
               <SelectItem value="inherit">{{ selectedAncestor(node) ? t("settings.mcpGroupPolicyInherit") : t("settings.mcpConnectionPolicyInherit") }}</SelectItem>
               <SelectItem value="read_only">{{ t("settings.mcpConnectionPolicyReadOnly") }}</SelectItem>

@@ -7729,7 +7729,7 @@ onUnmounted(() => {
                     <p class="text-xs text-muted-foreground">{{ t("settings.tableOpenSortDescription") }}</p>
                   </div>
                   <Select v-model="editTableOpenSortMode">
-                    <SelectTrigger id="tableOpenSortMode" class="h-8 w-32 shrink-0 text-xs">
+                    <SelectTrigger id="tableOpenSortMode" class="h-8 w-44 shrink-0 text-xs">
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
@@ -7744,7 +7744,7 @@ onUnmounted(() => {
                     <Label for="tableDatabaseSortDirection">{{ t("settings.tableDatabaseSortDirection") }}</Label>
                   </div>
                   <Select v-model="editTableDatabaseSortDirection">
-                    <SelectTrigger id="tableDatabaseSortDirection" class="h-8 w-28 shrink-0 text-xs">
+                    <SelectTrigger id="tableDatabaseSortDirection" class="h-8 w-36 shrink-0 text-xs">
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
@@ -7758,7 +7758,7 @@ onUnmounted(() => {
                     <Label for="tableLocalSortDirection">{{ t("settings.tableLocalSortDirection") }}</Label>
                   </div>
                   <Select v-model="editTableLocalSortDirection">
-                    <SelectTrigger id="tableLocalSortDirection" class="h-8 w-28 shrink-0 text-xs">
+                    <SelectTrigger id="tableLocalSortDirection" class="h-8 w-36 shrink-0 text-xs">
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
