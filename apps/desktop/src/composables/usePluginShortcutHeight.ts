@@ -1,17 +1,16 @@
 import { computed, nextTick, onScopeDispose, ref, watch, type Ref } from "vue";
-import { clampPluginShortcutHeight, pluginShortcutGridHeight } from "@/lib/plugins/pluginShortcuts";
+import { clampPluginShortcutHeight, pluginShortcutListHeight } from "@/lib/plugins/pluginShortcuts";
 import { beginPanelResize, endPanelResize } from "@/lib/app/panelResizeState";
 
-export function usePluginShortcutHeight(options: { section: Ref<HTMLElement | null>; scroll: Ref<HTMLElement | null>; horizontal: Ref<boolean>; count: Ref<number>; savedHeight: Ref<number | null>; save: (height: number | null) => Promise<void> }) {
+export function usePluginShortcutHeight(options: { section: Ref<HTMLElement | null>; scroll: Ref<HTMLElement | null>; sidebarList: Ref<boolean>; count: Ref<number>; savedHeight: Ref<number | null>; save: (height: number | null) => Promise<void> }) {
   const available = ref(0);
-  const width = ref(260);
-  const itemSize = ref(32);
-  const gap = ref(4);
+  const itemSize = ref(28);
+  const gap = ref(0);
   const padding = ref(8);
   const minimum = computed(() => itemSize.value + padding.value);
   const draft = ref<number | null>(null);
   const resizing = ref(false);
-  const height = computed(() => clampPluginShortcutHeight(draft.value ?? options.savedHeight.value ?? pluginShortcutGridHeight(options.count.value, width.value, itemSize.value, gap.value, padding.value), available.value, minimum.value));
+  const height = computed(() => clampPluginShortcutHeight(draft.value ?? options.savedHeight.value ?? pluginShortcutListHeight(options.count.value, itemSize.value, gap.value, padding.value), available.value, minimum.value));
   let observer: ResizeObserver | null = null;
   let handle: HTMLElement | null = null;
   let pointerId: number | null = null;
@@ -22,20 +21,19 @@ export function usePluginShortcutHeight(options: { section: Ref<HTMLElement | nu
   function measure() {
     const section = options.section.value;
     const scroll = options.scroll.value;
-    if (!section || !scroll || !options.horizontal.value) return;
+    if (!section || !scroll || !options.sidebarList.value) return;
     const tree = section.previousElementSibling as HTMLElement | null;
     const divider = section.querySelector<HTMLElement>("[data-shortcut-resize]");
     available.value = (tree?.offsetHeight ?? 0) + section.offsetHeight - (divider?.offsetHeight ?? 0);
-    width.value = scroll.clientWidth;
     const item = scroll.querySelector<HTMLElement>("[data-shortcut-id]");
     const grid = scroll.firstElementChild;
-    itemSize.value = item?.offsetHeight || 32;
-    gap.value = grid ? parseFloat(getComputedStyle(grid).gap) || 4 : 4;
+    itemSize.value = item?.offsetHeight || 28;
+    gap.value = grid ? parseFloat(getComputedStyle(grid).gap) || 0 : 0;
     const style = getComputedStyle(scroll);
     padding.value = (parseFloat(style.paddingTop) || 0) + (parseFloat(style.paddingBottom) || 0);
   }
   watch(
-    [options.section, options.horizontal],
+    [options.section, options.sidebarList],
     async (_value, _previous, onCleanup) => {
       let cancelled = false;
       onCleanup(() => {
@@ -43,14 +41,16 @@ export function usePluginShortcutHeight(options: { section: Ref<HTMLElement | nu
         observer?.disconnect();
       });
       observer?.disconnect();
-      if (!options.section.value || !options.horizontal.value) cancel();
+      if (!options.section.value || !options.sidebarList.value) cancel();
       await nextTick();
-      if (cancelled || !options.horizontal.value) return;
+      if (cancelled || !options.sidebarList.value) return;
       measure();
       if (typeof ResizeObserver !== "undefined" && options.section.value?.parentElement) {
         observer = new ResizeObserver(measure);
         observer.observe(options.section.value.parentElement);
         if (options.scroll.value) observer.observe(options.scroll.value);
+        // Sidebar font changes can resize rows without resizing the viewport.
+        if (options.scroll.value?.firstElementChild) observer.observe(options.scroll.value.firstElementChild);
       }
     },
     { flush: "post" },

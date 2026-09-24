@@ -24,7 +24,7 @@ async function setup() {
     },
   );
   root = document.createElement("div");
-  root.innerHTML = '<div></div><nav><div data-shortcut-resize></div><div style="padding:4px"><div style="gap:4px"><span data-shortcut-id="a"></span></div></div></nav>';
+  root.innerHTML = '<div></div><nav><div data-shortcut-resize></div><div style="padding:4px"><div style="gap:0px"><span data-shortcut-id="a"></span></div></div></nav>';
   document.body.append(root);
   const tree = root.children[0] as HTMLElement;
   const section = root.children[1] as HTMLElement;
@@ -42,7 +42,7 @@ async function setup() {
   });
   app = createApp({
     setup() {
-      sizing = usePluginShortcutHeight({ section: sectionRef, scroll: scrollRef, horizontal: ref(true), count, savedHeight, save });
+      sizing = usePluginShortcutHeight({ section: sectionRef, scroll: scrollRef, sidebarList: ref(true), count, savedHeight, save });
       return () => h("div");
     },
   });
@@ -87,7 +87,7 @@ describe("shortcut sidebar height", () => {
     );
     const section = ref<HTMLElement | null>(null);
     const scope = effectScope();
-    scope.run(() => usePluginShortcutHeight({ section, scroll: ref(null), horizontal: ref(true), count: ref(1), savedHeight: ref(null), save: vi.fn() }));
+    scope.run(() => usePluginShortcutHeight({ section, scroll: ref(null), sidebarList: ref(true), count: ref(1), savedHeight: ref(null), save: vi.fn() }));
     root = document.createElement("div");
     root.innerHTML = "<nav></nav>";
     section.value = root.firstElementChild as HTMLElement;
@@ -96,30 +96,30 @@ describe("shortcut sidebar height", () => {
     await nextTick();
     expect(observe).not.toHaveBeenCalled();
   });
-  it("recalculates rows on width/count changes, remembers manual height and resets to automatic", async () => {
+  it("keeps one entry per row regardless of width, remembers manual height and resets to automatic", async () => {
     const { sizing, count, savedHeight, setWidth } = await setup();
-    expect(sizing.height.value).toBe(76);
+    expect(sizing.height.value).toBe(148);
     setWidth(112);
     expect(sizing.height.value).toBe(148);
     count.value = 40;
-    expect(sizing.height.value).toBe(184);
+    expect(sizing.height.value).toBe(148);
     savedHeight.value = 250;
     expect(sizing.height.value).toBe(250);
     count.value = 2;
     expect(sizing.height.value).toBe(250);
     await sizing.reset();
     expect(savedHeight.value).toBeNull();
-    expect(sizing.height.value).toBe(40);
+    expect(sizing.height.value).toBe(64);
   });
   it("saves only on release and reserves space for the tree", async () => {
     const { sizing, handle, pointer, save, setTotal } = await setup();
     pointer(handle, "pointerdown", 500);
     pointer(window, "pointermove", 400);
-    expect(sizing.height.value).toBe(176);
+    expect(sizing.height.value).toBe(248);
     expect(save).not.toHaveBeenCalled();
     pointer(window, "pointerup", 400);
     await nextTick();
-    expect(save).toHaveBeenCalledWith(176);
+    expect(save).toHaveBeenCalledWith(248);
     expect(isPanelResizing.value).toBe(false);
     setTotal(250);
     expect(sizing.height.value).toBe(124);
@@ -129,7 +129,7 @@ describe("shortcut sidebar height", () => {
     pointer(handle, "pointerdown", 500);
     pointer(window, "pointermove", 400);
     window.dispatchEvent(reason === "escape" ? new KeyboardEvent("keydown", { key: "Escape" }) : new Event(reason));
-    expect(sizing.height.value).toBe(76);
+    expect(sizing.height.value).toBe(148);
     expect(save).not.toHaveBeenCalled();
     expect(isPanelResizing.value).toBe(false);
   });

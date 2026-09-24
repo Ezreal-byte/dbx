@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { createFrontendPluginRegistry } from "./frontendPlugin";
-import { pluginShortcutToolbarCount, pluginShortcutToolbarWidth, clampPluginShortcutHeight, pluginShortcutGridHeight, collectPluginShortcuts, movePluginShortcut, normalizePluginShortcutSettings, orderPluginShortcuts } from "./pluginShortcuts";
+import { pluginShortcutToolbarCount, pluginShortcutToolbarWidth, clampPluginShortcutHeight, pluginShortcutListHeight, collectPluginShortcuts, movePluginShortcut, normalizePluginShortcutSettings, orderPluginShortcuts } from "./pluginShortcuts";
 import type { InstalledPlugin } from "@/types/database";
 
 function plugin(id: string, contributions: unknown[], compatible = true): InstalledPlugin {
@@ -33,13 +33,13 @@ describe("plugin shortcuts", () => {
     expect(normalizePluginShortcutSettings({ sidebarHeight: -1 }).sidebarHeight).toBeNull();
     expect(normalizePluginShortcutSettings({ sidebarHeight: 156 }).sidebarHeight).toBe(156);
   });
-  it("fits rows to available columns with a five-row automatic limit", () => {
-    expect(pluginShortcutGridHeight(0, 184)).toBe(0);
-    expect(pluginShortcutGridHeight(5, 184)).toBe(40);
-    expect(pluginShortcutGridHeight(10, 184)).toBe(76);
-    expect(pluginShortcutGridHeight(26, 184)).toBe(184);
-    expect(pluginShortcutGridHeight(5, 112)).toBe(76);
-    expect(pluginShortcutGridHeight(5, 40)).toBe(184);
+  it("fits one entry per row with a five-row automatic limit", () => {
+    expect(pluginShortcutListHeight(0)).toBe(0);
+    expect(pluginShortcutListHeight(1)).toBe(36);
+    expect(pluginShortcutListHeight(3)).toBe(92);
+    expect(pluginShortcutListHeight(5)).toBe(148);
+    expect(pluginShortcutListHeight(10)).toBe(148);
+    expect(pluginShortcutListHeight(3, 32)).toBe(104);
     expect(clampPluginShortcutHeight(500, 400)).toBe(280);
     expect(clampPluginShortcutHeight(1, 400)).toBe(40);
     expect(clampPluginShortcutHeight(40, 130)).toBe(10);

@@ -20,9 +20,9 @@ const { entries, open, isActive } = usePluginShortcuts();
 const { update, saving } = usePluginShortcutPreferences();
 const section = ref<HTMLElement | null>(null);
 const scroll = ref<HTMLElement | null>(null);
-const horizontal = computed(() => props.position === "sidebar-bottom");
+const sidebarList = computed(() => props.position === "sidebar-bottom");
 const left = computed(() => props.position.startsWith("left-"));
-const bottom = computed(() => !horizontal.value && props.position.endsWith("-bottom"));
+const bottom = computed(() => !sidebarList.value && props.position.endsWith("-bottom"));
 const ids = computed(() => entries.value.map((entry) => entry.id));
 function saveError(error: unknown) {
   toast(`${t("pluginPlatform.shortcutsSaveFailed")}: ${String(error)}`, 5000);
@@ -30,7 +30,7 @@ function saveError(error: unknown) {
 const sizing = usePluginShortcutHeight({
   section,
   scroll,
-  horizontal,
+  sidebarList,
   count: computed(() => entries.value.length),
   savedHeight: computed(() => settings.editorSettings.pluginShortcuts.sidebarHeight),
   save: async (sidebarHeight) => {
@@ -44,7 +44,7 @@ const sizing = usePluginShortcutHeight({
 const sorting = usePluginShortcutSort({
   container: scroll,
   ids,
-  horizontal,
+  horizontal: ref(false),
   disabled: computed(() => saving.value || sizing.resizing.value),
   commit: async (source, target, after) => {
     try {
@@ -73,12 +73,12 @@ function activate(entry: PluginShortcutEntry) {
     ref="section"
     :aria-label="t('pluginPlatform.shortcutsTitle')"
     :data-plugin-shortcut-position="position"
-    class="plugin-shortcut-bar flex shrink-0 flex-col bg-muted/30"
-    :class="horizontal ? 'min-w-0' : ['min-h-0 w-10 self-stretch', left ? 'border-r' : 'border-l']"
+    class="plugin-shortcut-bar flex shrink-0 flex-col"
+    :class="sidebarList ? 'min-w-0' : ['min-h-0 w-10 self-stretch bg-muted/30', left ? 'border-r' : 'border-l']"
     @dragstart.prevent
   >
     <div
-      v-if="horizontal"
+      v-if="sidebarList"
       data-shortcut-resize
       role="separator"
       tabindex="0"
@@ -91,18 +91,35 @@ function activate(entry: PluginShortcutEntry) {
       @dblclick="!saving && sizing.reset()"
       @keydown="!saving && sizing.resizeWithKeyboard($event)"
     />
-    <div ref="scroll" data-shortcut-scroll class="min-h-0 overflow-y-auto overflow-x-hidden p-1" :class="horizontal ? 'shrink-0' : 'flex-1'" :style="horizontal ? { height: `${sizing.height.value}px` } : undefined">
-      <div class="shortcut-items flex gap-1" :class="horizontal ? 'flex-row flex-wrap content-start' : ['min-h-full flex-col', { 'shortcut-items--bottom': bottom }]">
-        <LightTooltip v-for="(entry, index) in entries" :key="entry.id" :text="entry.label" :disabled="drag.active || sizing.resizing.value" :side="horizontal ? 'top' : left ? 'right' : 'left'" content-class="shortcut-tooltip">
+    <div ref="scroll" data-shortcut-scroll class="min-h-0 overflow-y-auto overflow-x-hidden p-1" :class="sidebarList ? 'shrink-0' : 'flex-1'" :style="sidebarList ? { height: `${sizing.height.value}px` } : undefined">
+      <div class="shortcut-items flex flex-col" :class="sidebarList ? 'gap-0' : ['min-h-full gap-1', { 'shortcut-items--bottom': bottom }]">
+        <LightTooltip v-for="(entry, index) in entries" :key="entry.id" :text="entry.label" :disabled="drag.active || sizing.resizing.value" :side="sidebarList ? 'top' : left ? 'right' : 'left'" content-class="shortcut-tooltip">
           <span
             class="shortcut-item relative flex shrink-0 touch-none"
-            :class="{ 'mt-auto': bottom && index === 0, 'drop-before': drag.target === entry.id && !drag.after && drag.source !== entry.id, 'drop-after': drag.target === entry.id && drag.after && drag.source !== entry.id, 'opacity-40': drag.active && drag.source === entry.id }"
+            :class="{
+              'w-full min-w-0': sidebarList,
+              'mt-auto': bottom && index === 0,
+              'drop-before': drag.target === entry.id && !drag.after && drag.source !== entry.id,
+              'drop-after': drag.target === entry.id && drag.after && drag.source !== entry.id,
+              'opacity-40': drag.active && drag.source === entry.id,
+            }"
             :data-shortcut-id="entry.id"
             @pointerdown="sorting.start($event, entry.id)"
           >
-            <Button variant="ghost" size="icon" class="shortcut-button relative size-8 shrink-0" :class="{ 'shortcut-button--active': isActive(entry) }" :aria-label="entry.label" :aria-pressed="isActive(entry)" :disabled="entry.disabled" @click="activate(entry)">
-              <PluginIcon :plugin-id="entry.pluginId" :icon="entry.icon" class="size-4 [&_svg]:text-current [&_img]:pointer-events-none" />
-              <span v-if="isActive(entry)" class="absolute rounded-full bg-primary" :class="horizontal ? 'bottom-0 h-0.5 w-3' : 'left-0 h-3 w-0.5'" aria-hidden="true" />
+            <Button
+              variant="ghost"
+              size="icon"
+              class="shortcut-button relative shrink-0"
+              :class="[sidebarList ? 'shortcut-list-button h-auto min-h-7 w-full min-w-0 justify-start gap-2 rounded-none px-2 py-1 text-left font-normal' : 'size-8', { 'shortcut-button--active': isActive(entry) }]"
+              :style="sidebarList ? { fontSize: `${settings.editorSettings.sidebarFontSize}px` } : undefined"
+              :aria-label="entry.label"
+              :aria-pressed="isActive(entry)"
+              :disabled="entry.disabled"
+              @click="activate(entry)"
+            >
+              <PluginIcon :plugin-id="entry.pluginId" :icon="entry.icon" :class="sidebarList ? 'size-3.5' : 'size-4'" class="shrink-0 [&_svg]:text-current [&_img]:pointer-events-none" />
+              <span v-if="sidebarList" data-shortcut-label class="min-w-0 flex-1 truncate">{{ entry.label }}</span>
+              <span v-if="isActive(entry)" data-shortcut-active-indicator :class="sidebarList ? 'size-1.5 shrink-0 rounded-full bg-green-500' : 'absolute left-0 h-3 w-0.5 rounded-full bg-primary'" aria-hidden="true" />
             </Button>
           </span>
         </LightTooltip>
@@ -164,20 +181,25 @@ function activate(entry: PluginShortcutEntry) {
 .shortcut-item.drop-after::after {
   bottom: -3px;
 }
-[data-plugin-shortcut-position="sidebar-bottom"] .drop-before::before,
-[data-plugin-shortcut-position="sidebar-bottom"] .drop-after::after {
-  width: 2px;
-  height: auto;
-  top: 0;
-  bottom: 0;
+.shortcut-list-button {
+  border-width: 0;
+  color: var(--foreground);
 }
-[data-plugin-shortcut-position="sidebar-bottom"] .drop-before::before {
-  left: -3px;
-  right: auto;
+.shortcut-list-button:hover {
+  background: var(--sidebar-accent);
 }
-[data-plugin-shortcut-position="sidebar-bottom"] .drop-after::after {
-  right: -3px;
-  left: auto;
+/* Match TreeItem's unfocused and focused selection, including theme overrides. */
+.shortcut-list-button.shortcut-button--active {
+  background: var(--tree-connection-active-bg, rgb(235 235 235));
+}
+:root.dark .shortcut-list-button.shortcut-button--active {
+  background: var(--tree-connection-active-bg, rgb(36 36 36));
+}
+.shortcut-list-button.shortcut-button--active:focus {
+  background: var(--tree-connection-active-focus-bg, rgb(211 227 245));
+}
+:root.dark .shortcut-list-button.shortcut-button--active:focus {
+  background: var(--tree-connection-active-focus-bg, rgb(33 60 89));
 }
 .shortcut-pointer-overlay {
   z-index: 2147483646;

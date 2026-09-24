@@ -32,7 +32,7 @@ function mount(position: PluginShortcutPosition) {
   scroll.getBoundingClientRect = () => box(0, 0, 100, 200);
   const items = container.querySelectorAll<HTMLElement>("[data-shortcut-id]");
   items.forEach((item, i) => {
-    item.getBoundingClientRect = () => (position === "sidebar-bottom" ? box((i % 2) * 36, Math.floor(i / 2) * 36, 32, 32) : box(0, i * 36, 32, 32));
+    item.getBoundingClientRect = () => box(0, i * 36, position === "sidebar-bottom" ? 100 : 32, 32);
   });
   return items;
 }
@@ -119,9 +119,12 @@ describe("plugin shortcut bar", () => {
   });
   it("reflects activity and hides empty or disabled bars and dividers", async () => {
     mount("sidebar-bottom");
+    expect([...container.querySelectorAll("[data-shortcut-label]")].map((label) => label.textContent)).toEqual(["Function a", "Function b", "Function c"]);
     const buttons = container.querySelectorAll("button");
     expect(buttons[0].getAttribute("aria-pressed")).toBe("false");
     expect(buttons[1].getAttribute("aria-pressed")).toBe("true");
+    expect(buttons[0].querySelector("[data-shortcut-active-indicator]")).toBeNull();
+    expect(buttons[1].querySelector("[data-shortcut-active-indicator]")?.classList.contains("bg-green-500")).toBe(true);
     expect(container.querySelector('[role="separator"]')).not.toBeNull();
     mocks.state.editorSettings.pluginShortcuts.enabled = false;
     await nextTick();

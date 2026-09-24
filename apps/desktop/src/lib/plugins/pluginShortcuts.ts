@@ -36,9 +36,8 @@ export function pluginShortcutToolbarCount(count: number, requested: number, wid
 }
 
 /** All sizes are CSS pixels; the caller measures its actual scroll viewport. */
-export function pluginShortcutGridHeight(count: number, width: number, itemSize = 32, gap = 4, padding = 8): number {
-  const columns = Math.max(1, Math.floor((width - padding + gap) / (itemSize + gap)));
-  const rows = Math.min(5, Math.ceil(count / columns));
+export function pluginShortcutListHeight(count: number, itemSize = 28, gap = 0, padding = 8): number {
+  const rows = Math.min(5, count);
   return rows ? padding + rows * itemSize + (rows - 1) * gap : 0;
 }
 
