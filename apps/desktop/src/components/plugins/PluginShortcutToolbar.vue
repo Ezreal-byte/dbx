@@ -144,13 +144,7 @@ onScopeDispose(() => {
     <DropdownMenu v-if="overflowEntries.length" v-model:open="menuOpen" :modal="false">
       <span ref="moreTrigger" class="flex shrink-0">
         <DropdownMenuTrigger as-child>
-          <Button
-            variant="ghost"
-            size="icon"
-            class="shrink-0"
-            :class="[dropdownOnly ? 'shortcut-split-trigger relative h-8 w-7 rounded-l-none text-current' : 'shortcut-toolbar-button size-7', { 'bg-accent text-accent-foreground': menuOpen }]"
-            :aria-label="t('pluginPlatform.shortcutsMore', { count: overflowEntries.length })"
-          >
+          <Button variant="ghost" size="icon" class="shortcut-toolbar-button shrink-0" :class="[dropdownOnly ? 'h-8 w-7 rounded-l-none' : 'size-7', { 'bg-accent text-accent-foreground': menuOpen }]" :aria-label="t('pluginPlatform.shortcutsMore', { count: overflowEntries.length })">
             <ChevronDown class="size-3.5 transition-transform" :class="{ 'rotate-180': menuOpen }" />
           </Button>
         </DropdownMenuTrigger>
@@ -191,16 +185,6 @@ onScopeDispose(() => {
 </template>
 
 <style scoped>
-.shortcut-split-trigger::before {
-  content: "";
-  position: absolute;
-  left: 0;
-  top: 8px;
-  bottom: 8px;
-  width: 1px;
-  background: var(--border);
-  pointer-events: none;
-}
 .shortcut-toolbar-button {
   border: 1px solid transparent;
   color: var(--muted-foreground);

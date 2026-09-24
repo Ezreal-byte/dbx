@@ -590,12 +590,7 @@ const toolbarStyle = computed(() => {
         <!-- 小圆点仅提示"有可更新驱动"，具体数量交给对话框内标签页红点展示，避免工具栏长期挂红数字。 -->
         <span v-if="agentDriverUpdateCount > 0" class="ml-0.5 inline-block h-2 w-2 rounded-full bg-red-500" :aria-label="t('toolbar.updatableDriverCount')" :title="t('toolbar.updatableDriverCount')" />
       </Button>
-      <div
-        v-if="toolbarItems.pluginCenter || showPluginCenterShortcuts"
-        ref="pluginCenterGroup"
-        class="flex shrink-0 items-center rounded-md transition-colors"
-        :class="[showPluginCenterShortcuts ? 'bg-muted/60 hover:bg-accent/70 focus-within:bg-accent/70 has-[[data-state=open]]:bg-accent' : '', { 'bg-accent': showPluginCenter }]"
-      >
+      <div v-if="toolbarItems.pluginCenter || showPluginCenterShortcuts" ref="pluginCenterGroup" class="flex shrink-0 items-center rounded-md" :class="{ 'bg-accent': showPluginCenter }">
         <Button v-if="toolbarItems.pluginCenter" variant="ghost" size="sm" :class="[toolbarTextButtonClass, { 'rounded-r-none': showPluginCenterShortcuts }]" @click="emit('open-plugin-center')">
           <PlugZap class="h-3.5 w-3.5" />
           <span :class="toolbarTextLabelClass">{{ t("toolbar.pluginCenter") }}</span>
