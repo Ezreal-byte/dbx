@@ -1,5 +1,6 @@
 // @vitest-environment happy-dom
 import { createApp, h, reactive, ref } from "vue";
+import { createPinia, setActivePinia } from "pinia";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { usePluginShortcuts } from "../usePluginShortcuts";
 import { addPluginDockEntry, usePluginBottomDock } from "@/lib/plugins/pluginBottomDock";
@@ -8,7 +9,7 @@ const mocks = vi.hoisted(() => ({ list: vi.fn(), query: null as any, locale: nul
 vi.mock("@/lib/backend/api", () => ({ listPlugins: mocks.list }));
 vi.mock("@/stores/queryStore", () => ({ useQueryStore: () => mocks.query }));
 vi.mock("@/stores/settingsStore", () => ({ useSettingsStore: () => mocks.settings }));
-vi.mock("vue-i18n", () => ({ useI18n: () => ({ locale: mocks.locale }) }));
+vi.mock("vue-i18n", async (original) => ({ ...(await original<typeof import("vue-i18n")>()), useI18n: () => ({ locale: mocks.locale, t: (key: string) => key }) }));
 
 const fixture = (id: string, presentation = "panel") => ({
   compatibility: { compatible: true },
@@ -48,6 +49,50 @@ beforeEach(() => {
 });
 afterEach(() => app?.unmount());
 describe("shortcut dispatch", () => {
+  it.each([
+    { source: undefined, restored: false },
+    { source: undefined, restored: true },
+    { source: "open", restored: true },
+    { source: "other", restored: true },
+  ])("preserves a reused tab and its context (source=$source, restored=$restored)", async ({ source, restored }) => {
+    setActivePinia(createPinia());
+    const { useQueryStore } = await vi.importActual<typeof import("@/stores/queryStore")>("@/stores/queryStore");
+    const query = useQueryStore();
+    mocks.query = query;
+    const oldId = query.openPluginWorkbench("tab", "workbench", {
+      commandId: source,
+      title: "Existing session",
+      context: { workbenchId: "existing-session", retained: { value: 1 } },
+    });
+    // Restored tabs contain serialized legacy metadata, without commandId.
+    if (restored) query.tabs = JSON.parse(JSON.stringify(query.tabs));
+    const metadata = query.tabs[0].pluginWorkbench!;
+    const context = metadata.context;
+    const plugin = fixture("tab", "tab");
+    plugin.manifest.contributions.push({ ...(plugin.manifest.contributions[1] as any), id: "other", label: "Other function" });
+    plugin.manifest.contributions.push({ type: "menus", id: "menus", items: ["open", "other"].map((command) => ({ command, location: "appToolbar", group: "navigation", order: 0, default_visible: true })) } as any);
+    mocks.list.mockResolvedValue([plugin]);
+    await mount();
+    const entry = shortcuts.entries.value.find((entry) => entry.targetId === "open")!;
+    const other = shortcuts.entries.value.find((entry) => entry.targetId === "other")!;
+    shortcuts.open(entry);
+    expect(query.activeTabId).toBe(oldId);
+    expect(query.tabs).toHaveLength(1);
+    expect(query.tabs[0].pluginWorkbench).toBe(metadata);
+    expect(metadata.context).toBe(context);
+    expect(metadata.context).toEqual({ workbenchId: "existing-session", retained: { value: 1 } });
+    expect(metadata.commandId).toBe(source ?? "open");
+    expect(shortcuts.isActive(entry)).toBe(source !== "other");
+    expect(shortcuts.isActive(other)).toBe(source === "other");
+    // Another command sharing this workbench must not steal its provenance.
+    shortcuts.open(other);
+    expect(query.tabs).toHaveLength(1);
+    expect(query.activeTabId).toBe(oldId);
+    expect(metadata.commandId).toBe(source ?? "open");
+    expect(metadata.context).toBe(context);
+    expect(shortcuts.isActive(entry)).toBe(source !== "other");
+    expect(shortcuts.isActive(other)).toBe(source === "other");
+  });
   it.each(["command", "connection"] as const)("highlights additional %s sessions only for their originating shortcut", async (kind) => {
     const plugin = fixture("a");
     (plugin.manifest.contributions[1] as any).action.instance_key = "local";

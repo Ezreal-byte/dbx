@@ -3722,6 +3722,11 @@ export const useQueryStore = defineStore("query", () => {
     if (!options.forceNew) {
       const existing = tabs.value.find((tab) => tab.mode === "plugin-workbench" && tab.pluginWorkbench?.pluginId === pluginId && tab.pluginWorkbench?.contributionId === contributionId && pluginTabConnectionId(tab) === connectionId);
       if (existing) {
+        // Adopt legacy/bridge-created tabs without changing their live context.
+        // A shared workbench keeps an existing command's provenance on reuse.
+        if (existing.pluginWorkbench!.commandId == null && options.commandId) {
+          existing.pluginWorkbench!.commandId = options.commandId;
+        }
         if (options.refreshContextOnReuse && options.context) {
           existing.pluginWorkbench = {
             ...existing.pluginWorkbench!,
