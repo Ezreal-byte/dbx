@@ -164,7 +164,7 @@ onScopeDispose(() => {
           >
             <PluginIcon :plugin-id="entry.pluginId" :icon="entry.icon" class="size-4 shrink-0 [&_svg]:text-current [&_img]:pointer-events-none" />
             <span class="min-w-0 flex-1 truncate" :title="entry.label">{{ entry.label }}</span>
-            <span v-if="isActive(entry)" class="size-1.5 shrink-0 rounded-full bg-primary" aria-hidden="true" />
+            <span v-if="isActive(entry)" class="size-1.5 shrink-0 rounded-full bg-green-500" aria-hidden="true" />
           </DropdownMenuItem>
         </div>
       </DropdownMenuContent>
