@@ -19,6 +19,8 @@ Manage shortcuts in **Plugin Center → Settings → Global settings**. They are
 
 Each function has its own draggable icon. Visibility switches apply to a whole plugin. All positions share the saved order. Hiding or uninstalling a plugin retains its recorded positions, so the same entries return to those positions; unrecorded entries follow saved entries. Entry identity consists of the plugin ID, entry kind, and function ID. Changing these IDs creates a new entry.
 
+Choose **Beside Plugin Center (dropdown)** to show all shortcuts as icon-and-name rows in the menu beside the Plugin Center button. Rows support drag sorting; the floating toolbar icon count does not apply here.
+
 Below the connection tree, shortcuts form a single-column list with an icon on the left and a name on the right, using the tree’s row style and font size. Automatic height fits one entry per row up to five rows, with vertical scrolling for remaining entries. Drag the divider to save a custom height; double-click it to restore automatic height. Escape, window blur, or releasing outside the sorting area cancels sorting. Failed saves show an error and roll back.
 
 Shortcuts honor declared `appToolbar` visibility and command enablement. Standalone plugins also expose existing workbenches, preferring a matching command when available. Legacy plugins without commands can expose filesystem entries. Connection plugins only expose explicitly declared global commands; the host does not invent workbench entries without connection context. Incompatible plugins are excluded.

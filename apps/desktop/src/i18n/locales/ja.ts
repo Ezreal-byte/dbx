@@ -169,6 +169,7 @@ export default withEnglishFallback({
   },
   docs,
   pluginPlatform: {
+    shortcutsPluginCenter: "プラグインセンターの右側（ドロップダウン）",
     shortcutsToolbar: "更新ボタンの左側（フローティング）",
     shortcutsToolbarCount: "表示するアイコン数",
     shortcutsToolbarHint: "0 はすべてメニューに表示します。幅が足りない場合も自動的に収納します。",

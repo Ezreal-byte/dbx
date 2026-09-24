@@ -169,6 +169,7 @@ export default withEnglishFallback({
   },
   docs,
   pluginPlatform: {
+    shortcutsPluginCenter: "Junto al centro de plugins (desplegable)",
     shortcutsToolbar: "Antes de Actualizar (flotante)",
     shortcutsToolbarCount: "Iconos visibles",
     shortcutsToolbarHint: "0 coloca todos los accesos en el menú. Se agrupan más si falta espacio.",

@@ -83,6 +83,7 @@ const consul = {
 
 export default withEnglishFallback({
   pluginPlatform: {
+    shortcutsPluginCenter: "Eklenti merkezinin yanında (açılır menü)",
     shortcutsToolbar: "Güncelle düğmesinin solunda (kayan)",
     shortcutsToolbarCount: "Görünür simge sayısı",
     shortcutsToolbarHint: "0 tüm girişleri menüye taşır. Alan daraldığında diğerleri de menüye taşınır.",

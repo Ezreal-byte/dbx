@@ -116,6 +116,7 @@ export default withEnglishFallback({
     name: "DBX",
   },
   pluginPlatform: {
+    shortcutsPluginCenter: "Справа от центра плагинов (меню)",
     shortcutsToolbar: "Слева от обновления (плавающая)",
     shortcutsToolbarCount: "Число видимых значков",
     shortcutsToolbarHint: "0 помещает все пункты в меню. При нехватке места остальные также перемещаются в меню.",

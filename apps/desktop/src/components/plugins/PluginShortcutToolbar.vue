@@ -13,6 +13,7 @@ import { useSettingsStore } from "@/stores/settingsStore";
 import { useToast } from "@/composables/useToast";
 import { movePluginShortcut, pluginShortcutToolbarCount, pluginShortcutToolbarWidth, type PluginShortcutEntry } from "@/lib/plugins/pluginShortcuts";
 
+const props = defineProps<{ dropdownOnly?: boolean }>();
 const emit = defineEmits<{ "layout-change": [] }>();
 const { t } = useI18n();
 const settings = useSettingsStore();
@@ -24,7 +25,7 @@ const menuList = ref<HTMLElement | null>(null);
 const moreTrigger = ref<HTMLElement | null>(null);
 const menuOpen = ref(false);
 const measuredWidth = ref<number | null>(null);
-const requested = computed(() => settings.editorSettings.pluginShortcuts.toolbarCount);
+const requested = computed(() => (props.dropdownOnly ? 0 : settings.editorSettings.pluginShortcuts.toolbarCount));
 const preferredWidth = computed(() => pluginShortcutToolbarWidth(entries.value.length, requested.value));
 const count = computed(() => pluginShortcutToolbarCount(entries.value.length, requested.value, measuredWidth.value ?? preferredWidth.value));
 const inlineEntries = computed(() => entries.value.slice(0, count.value));
@@ -122,8 +123,9 @@ onScopeDispose(() => {
     ref="root"
     data-plugin-shortcut-toolbar
     :aria-label="t('pluginPlatform.shortcutsTitle')"
-    class="shortcut-toolbar flex h-8 min-w-[34px] shrink items-center gap-0.5 rounded-md border border-border/70 bg-background/80 px-0.5 py-0 shadow-xs"
-    :style="{ width: `${preferredWidth}px` }"
+    class="shortcut-toolbar flex h-8 items-center"
+    :class="dropdownOnly ? 'shrink-0 border-l border-border/70' : 'min-w-[34px] shrink gap-0.5 rounded-md border border-border/70 bg-background/80 px-0.5 py-0 shadow-xs'"
+    :style="dropdownOnly ? undefined : { width: `${preferredWidth}px` }"
     @dragstart.prevent
   >
     <LightTooltip v-for="entry in inlineEntries" :key="entry.id" :text="entry.label" :disabled="drag.active || menuOpen" side="bottom" content-class="shortcut-toolbar-tooltip">
@@ -142,12 +144,12 @@ onScopeDispose(() => {
     <DropdownMenu v-if="overflowEntries.length" v-model:open="menuOpen" :modal="false">
       <span ref="moreTrigger" class="flex shrink-0">
         <DropdownMenuTrigger as-child>
-          <Button variant="ghost" size="icon" class="shortcut-toolbar-button size-7 shrink-0" :class="{ 'bg-accent text-accent-foreground': menuOpen }" :aria-label="t('pluginPlatform.shortcutsMore', { count: overflowEntries.length })">
+          <Button variant="ghost" size="icon" class="shortcut-toolbar-button shrink-0" :class="[dropdownOnly ? 'h-8 w-7 rounded-l-none' : 'size-7', { 'bg-accent text-accent-foreground': menuOpen }]" :aria-label="t('pluginPlatform.shortcutsMore', { count: overflowEntries.length })">
             <ChevronDown class="size-3.5 transition-transform" :class="{ 'rotate-180': menuOpen }" />
           </Button>
         </DropdownMenuTrigger>
       </span>
-      <DropdownMenuContent align="end" :side-offset="8" class="w-60 max-w-[calc(100vw-16px)] p-1" @interact-outside="outside" @open-auto-focus="preventDragFocus" @dragstart.prevent>
+      <DropdownMenuContent :align="dropdownOnly ? 'start' : 'end'" :side-offset="8" class="w-60 max-w-[calc(100vw-16px)] p-1" @interact-outside="outside" @open-auto-focus="preventDragFocus" @dragstart.prevent>
         <div ref="menuList" data-plugin-shortcut-overflow class="max-h-[min(320px,var(--reka-dropdown-menu-content-available-height))] overflow-y-auto overflow-x-hidden">
           <DropdownMenuItem
             v-for="entry in overflowEntries"

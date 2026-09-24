@@ -14,6 +14,7 @@ vi.mock("@/components/ui/LightTooltip.vue", () => ({ default: { template: "<slot
 
 let app: ReturnType<typeof createApp>;
 let host: HTMLDivElement;
+const dropdownOnly = ref(false);
 let width: number | undefined;
 let resize: () => void;
 const flush = async () => {
@@ -25,6 +26,7 @@ const flush = async () => {
 beforeEach(() => {
   vi.clearAllMocks();
   width = undefined;
+  dropdownOnly.value = false;
   mocks.state = reactive({ isEditorSettingsLoaded: true, editorSettings: { pluginShortcuts: normalizePluginShortcutSettings({ position: "toolbar", toolbarCount: 2 }) }, updateEditorSettingsAndPersist: mocks.save });
   mocks.entries = ref(["a", "b", "c", "d", "e"].map((id) => ({ id, pluginId: id, label: `Function ${id}`, pluginName: `Plugin ${id}`, kind: "workbench", targetId: id, disabled: false })));
   mocks.save.mockResolvedValue(undefined);
@@ -44,7 +46,7 @@ beforeEach(() => {
   );
   host = document.createElement("div");
   document.body.append(host);
-  app = createApp({ render: () => h(PluginShortcutToolbar) });
+  app = createApp({ render: () => h(PluginShortcutToolbar, { dropdownOnly: dropdownOnly.value }) });
   app.mount(host);
 });
 afterEach(() => {
@@ -68,6 +70,40 @@ function pointer(target: EventTarget, type: string, x: number, y: number) {
 }
 
 describe("floating plugin shortcuts", () => {
+  it("shows all shortcuts beside Plugin Center regardless of the floating icon count", async () => {
+    dropdownOnly.value = true;
+    mocks.state.editorSettings.pluginShortcuts.toolbarCount = 10;
+    await flush();
+    expect(host.querySelectorAll("[data-shortcut-id]")).toHaveLength(0);
+    await openMenu();
+    const rows = document.querySelectorAll<HTMLElement>('[data-plugin-shortcut-overflow] [role="menuitem"]');
+    expect([...rows].map((row) => row.textContent?.trim())).toEqual(["Function a", "Function b", "Function c", "Function d", "Function e"]);
+    rows[1].click();
+    expect(mocks.open).toHaveBeenCalledWith(expect.objectContaining({ id: "b" }));
+    await flush();
+    expect(document.querySelector("[data-plugin-shortcut-overflow]")).toBeNull();
+  });
+  it("sorts within the Plugin Center dropdown and retains unavailable entry positions", async () => {
+    dropdownOnly.value = true;
+    mocks.state.editorSettings.pluginShortcuts.position = "plugin-center";
+    mocks.state.editorSettings.pluginShortcuts.order = ["a", "hidden", "b", "c", "d", "e"];
+    await openMenu();
+    const root = host.querySelector<HTMLElement>("[data-plugin-shortcut-toolbar]")!;
+    const menu = document.querySelector<HTMLElement>("[data-plugin-shortcut-overflow]")!;
+    root.getBoundingClientRect = () => rect(0, 0, 28, 32);
+    menu.getBoundingClientRect = () => rect(0, 40, 240, 160);
+    const rows = menu.querySelectorAll<HTMLElement>("[data-shortcut-id]");
+    rows.forEach((row, i) => {
+      row.getBoundingClientRect = () => rect(0, 40 + i * 32, 240, 32);
+    });
+    pointer(rows[2], "pointerdown", 20, 120);
+    pointer(window, "pointermove", 20, 41);
+    pointer(window, "pointerup", 20, 41);
+    await flush();
+    expect(mocks.save).toHaveBeenCalledWith({ pluginShortcuts: expect.objectContaining({ position: "plugin-center", order: ["c", "hidden", "a", "b", "d", "e"] }) });
+    expect(mocks.open).not.toHaveBeenCalled();
+  });
+
   it("shows the requested icons and renders remaining entries as named menu rows", async () => {
     await flush();
     expect(host.querySelectorAll("[data-shortcut-id]")).toHaveLength(2);

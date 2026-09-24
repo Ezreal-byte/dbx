@@ -81,6 +81,7 @@ const consul = {
 
 export default withEnglishFallback({
   pluginPlatform: {
+    shortcutsPluginCenter: "Plagin mərkəzinin yanında (açılan menyu)",
     shortcutsToolbar: "Yeniləmə düyməsinin solunda (üzən)",
     shortcutsToolbarCount: "Görünən nişanların sayı",
     shortcutsToolbarHint: "0 bütün girişləri menyuya yerləşdirir. Yer çatmadıqda qalanları da menyuya keçir.",

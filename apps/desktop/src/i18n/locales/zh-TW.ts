@@ -169,6 +169,7 @@ export default withEnglishFallback({
   },
   docs,
   pluginPlatform: {
+    shortcutsPluginCenter: "外掛中心右側（下拉）",
     shortcutsToolbar: "更新按鈕左側（浮動）",
     shortcutsToolbarCount: "主列顯示數量",
     shortcutsToolbarHint: "0 表示全部放入下拉選單；空間不足時自動收納。",

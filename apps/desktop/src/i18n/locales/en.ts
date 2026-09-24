@@ -166,6 +166,7 @@ export default {
   },
   docs,
   pluginPlatform: {
+    shortcutsPluginCenter: "Beside Plugin Center (dropdown)",
     shortcutsToolbar: "Before Update (floating)",
     shortcutsToolbarCount: "Visible toolbar icons",
     shortcutsToolbarHint: "0 puts all entries in the menu. Limited space moves more entries into the menu.",

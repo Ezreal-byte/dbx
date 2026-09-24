@@ -168,6 +168,7 @@ export default withEnglishFallback({
   },
   docs,
   pluginPlatform: {
+    shortcutsPluginCenter: "플러그인 센터 오른쪽 (드롭다운)",
     shortcutsToolbar: "업데이트 버튼 왼쪽 (플로팅)",
     shortcutsToolbarCount: "표시할 아이콘 수",
     shortcutsToolbarHint: "0은 모든 항목을 메뉴에 표시합니다. 공간이 부족하면 자동으로 메뉴에 넣습니다.",

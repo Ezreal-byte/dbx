@@ -91,6 +91,7 @@ export default withEnglishFallback({
   },
   docs,
   pluginPlatform: {
+    shortcutsPluginCenter: "插件中心右侧（下拉）",
     shortcutsToolbar: "更新按钮左侧（浮动）",
     shortcutsToolbarCount: "主栏显示数量",
     shortcutsToolbarHint: "0 表示全部放入下拉菜单；空间不足时自动收纳。",

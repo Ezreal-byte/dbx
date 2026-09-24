@@ -169,6 +169,7 @@ export default withEnglishFallback({
   },
   docs,
   pluginPlatform: {
+    shortcutsPluginCenter: "Ao lado da central de plugins (menu suspenso)",
     shortcutsToolbar: "Antes de Atualizar (flutuante)",
     shortcutsToolbarCount: "Ícones visíveis",
     shortcutsToolbarHint: "0 coloca todos os atalhos no menu. Mais atalhos são agrupados quando falta espaço.",

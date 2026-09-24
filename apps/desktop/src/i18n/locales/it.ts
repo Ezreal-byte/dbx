@@ -168,6 +168,7 @@ export default withEnglishFallback({
   },
   docs,
   pluginPlatform: {
+    shortcutsPluginCenter: "Accanto al centro plugin (menu a discesa)",
     shortcutsToolbar: "Prima di Aggiorna (flottante)",
     shortcutsToolbarCount: "Icone visibili",
     shortcutsToolbarHint: "0 sposta tutte le voci nel menu. Altre voci vengono raggruppate se lo spazio è limitato.",

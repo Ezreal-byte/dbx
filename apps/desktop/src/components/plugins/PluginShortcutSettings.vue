@@ -57,6 +57,7 @@ async function togglePlugin(pluginId: string, visible: boolean) {
           <SelectItem value="right-top">{{ t("pluginPlatform.shortcutsRightTop") }}</SelectItem>
           <SelectItem value="right-bottom">{{ t("pluginPlatform.shortcutsRightBottom") }}</SelectItem>
           <SelectItem value="sidebar-bottom">{{ t("pluginPlatform.shortcutsBottom") }}</SelectItem>
+          <SelectItem value="plugin-center">{{ t("pluginPlatform.shortcutsPluginCenter") }}</SelectItem>
           <SelectItem value="toolbar">{{ t("pluginPlatform.shortcutsToolbar") }}</SelectItem>
         </SelectContent>
       </Select>
