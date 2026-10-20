@@ -9323,8 +9323,8 @@ function openExternalUrl(url: string) {
                             t("connection.sqlServerAuthWindows")
                           }}</Button>
                         </div>
+                        <p v-if="sqlServerWindowsAuthSelected" class="text-xs text-muted-foreground">{{ t("connection.sqlServerWindowsAuthHint") }}</p>
                         <p v-if="sqlServerAuthError" role="alert" class="text-xs text-destructive">{{ sqlServerAuthError }}</p>
-                        <p v-else-if="sqlServerWindowsAuthSelected" class="text-xs text-muted-foreground">{{ t("connection.sqlServerWindowsAuthHint") }}</p>
                         <p v-else-if="!sqlServerWindowsAuthAvailable" class="text-xs text-muted-foreground">{{ t("connection.sqlServerWindowsAuthUnsupported") }}</p>
                         <p v-else-if="sqlServerDriverMode === 'legacy'" class="text-xs text-muted-foreground">{{ t("connection.sqlServerWindowsAuthNativeOnly") }}</p>
                       </div>

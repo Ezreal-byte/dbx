@@ -211,6 +211,8 @@ describe("SQL Server Windows authentication", () => {
   it("defaults saved connections to SQL login and preserves their credentials", async () => {
     await mountDialog(sqlServerConnection());
     expect(buttonByText("SQL Server")?.getAttribute("aria-pressed")).toBe("true");
+    expect(buttonByText("Windows (current account, NTLM)")).toBeTruthy();
+    expect(document.body.textContent).not.toContain("Kerberos is not supported");
     expect(document.querySelector('input[type="password"]')).toBeTruthy();
     buttonByText("Save")!.click();
     await settle();
@@ -219,8 +221,10 @@ describe("SQL Server Windows authentication", () => {
 
   it("saves Windows authentication, clears unused SQL credentials, and preserves advanced parameters", async () => {
     await mountDialog(sqlServerConnection({ url_params: "applicationName={DBX; Client};encrypt=false" }));
-    buttonByText("Windows (current account)")!.click();
+    buttonByText("Windows (current account, NTLM)")!.click();
     await settle();
+    expect(document.body.textContent).toContain("Only NTLM is supported; Kerberos is not supported.");
+    expect(document.body.textContent).toContain("This option cannot be used if your environment requires Kerberos or disables NTLM.");
     expect(document.querySelector('input[type="password"]')).toBeNull();
     expect(document.querySelector('input[aria-label="Save password"]')).toBeNull();
     expect([...document.querySelectorAll("input")].some((input) => input.value === "dbx_test")).toBe(false);
@@ -239,10 +243,12 @@ describe("SQL Server Windows authentication", () => {
 
   it("restores the selected Windows mode when editing a saved connection", async () => {
     await mountDialog(sqlServerConnection({ url_params: "sqlserverAuth=windows", username: "", password: "", save_password: false }));
-    expect(buttonByText("Windows (current account)")?.getAttribute("aria-pressed")).toBe("true");
+    expect(buttonByText("Windows (current account, NTLM)")?.getAttribute("aria-pressed")).toBe("true");
+    expect(document.body.textContent).toContain("Only NTLM is supported; Kerberos is not supported.");
     expect(document.querySelector('input[type="password"]')).toBeNull();
     buttonByText("SQL Server")!.click();
     await settle();
+    expect(document.body.textContent).not.toContain("Kerberos is not supported");
     expect(document.querySelector('input[type="password"]')).toBeTruthy();
     expect(buttonByText("Legacy")?.disabled).toBe(false);
   });
@@ -253,8 +259,9 @@ describe("SQL Server Windows authentication", () => {
   ])("blocks imported Windows authentication outside Windows desktop: %o", async (platform) => {
     Object.assign(platformState, platform);
     await mountDialog(sqlServerConnection({ url_params: "sqlserverAuth=windows" }));
-    expect(buttonByText("Windows (current account)")?.getAttribute("aria-pressed")).toBe("true");
-    expect(buttonByText("Windows (current account)")?.disabled).toBe(true);
+    expect(buttonByText("Windows (current account, NTLM)")?.getAttribute("aria-pressed")).toBe("true");
+    expect(buttonByText("Windows (current account, NTLM)")?.disabled).toBe(true);
+    expect(document.body.textContent).toContain("Only NTLM is supported; Kerberos is not supported.");
     expect(document.body.textContent).toContain("Windows authentication is available only in the Windows desktop app.");
     expect(buttonByText("Test")?.disabled).toBe(true);
     expect(buttonByText("Save")?.disabled).toBe(true);
@@ -266,11 +273,11 @@ describe("SQL Server Windows authentication", () => {
 
   it("requires switching away from Legacy before selecting Windows authentication", async () => {
     await mountDialog(sqlServerConnection({ driver_profile: "sqlserver-legacy" }));
-    expect(buttonByText("Windows (current account)")?.disabled).toBe(true);
+    expect(buttonByText("Windows (current account, NTLM)")?.disabled).toBe(true);
     expect(document.body.textContent).toContain("Windows authentication requires the default driver.");
     buttonByText("Auto")!.click();
     await settle();
-    expect(buttonByText("Windows (current account)")?.disabled).toBe(false);
+    expect(buttonByText("Windows (current account, NTLM)")?.disabled).toBe(false);
   });
 
   it("blocks an imported Legacy + Windows combination until the driver is changed", async () => {
