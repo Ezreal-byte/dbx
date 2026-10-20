@@ -1,7 +1,7 @@
 import type { ConnectionConfig, SidebarLayout, TunnelProfile } from "@/types/database";
 import { filterSidebarLayoutByConnectionIds as filterLayoutByConnectionIds, remapSidebarLayoutConnectionIds } from "@/lib/sidebar/sidebarLayout";
 import { buildOracleTnsConnectionString, parseOracleTnsConnectionString } from "@/lib/connection/oracleTnsConnection";
-import { splitSqlServerJdbcParams } from "@/lib/connection/sqlServerLegacyCompatibility";
+import { parseSqlServerJdbcParams } from "@/lib/connection/sqlServerLegacyCompatibility";
 
 export type ConnectionExportProtection = { mode: "encrypted"; passphrase: string } | { mode: "plaintext" };
 
@@ -132,13 +132,11 @@ function scrubUrlParams(value: string | undefined, sqlServer = false): string | 
     return secret ? key + "=" : part;
   };
   if (sqlServer) {
+    const parsed = parseSqlServerJdbcParams(value);
+    // An unclosed value can hide later credentials, so omit malformed parameters.
+    if (parsed.unterminatedValue) return undefined;
     const prefix = value.trim().startsWith("?") ? "?" : "";
-    return (
-      prefix +
-      splitSqlServerJdbcParams(value)
-        .map((part) => `${part.separator}${scrubPart(part.value)}`)
-        .join("")
-    );
+    return prefix + parsed.parts.map((part) => `${part.separator}${scrubPart(part.value)}`).join("");
   }
   return value.split("&").map(scrubPart).join("&");
 }
