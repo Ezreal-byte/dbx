@@ -253,6 +253,31 @@ describe("SQL Server Windows authentication", () => {
     expect(buttonByText("Legacy")?.disabled).toBe(false);
   });
 
+  it.each(["sql", "windows"] as const)("normalizes a host-entered port on submit without blur for %s authentication", async (authentication) => {
+    await mountDialog(sqlServerConnection({ url_params: "applicationName={DBX; Client}" }));
+    if (authentication === "windows") {
+      buttonByText("Windows (current account, NTLM)")!.click();
+      await settle();
+    }
+    const hostInput = [...document.querySelectorAll<HTMLInputElement>("input")].find((input) => input.value === "sqlserver.example.test")!;
+    hostInput.value = "tcp:sqlserver.example.test,15433";
+    hostInput.dispatchEvent(new Event("input", { bubbles: true }));
+    await settle();
+    buttonByText("Save")!.click();
+    await settle();
+    expect(store.updateConnection).toHaveBeenCalledWith(
+      expect.objectContaining({
+        host: "sqlserver.example.test",
+        port: 15433,
+        external_config: expect.objectContaining({ portExplicit: true }),
+        url_params: authentication === "windows" ? "applicationName={DBX; Client}&sqlserverAuth=windows" : "applicationName={DBX; Client}",
+        username: authentication === "windows" ? "" : "dbx_test",
+        password: authentication === "windows" ? "" : "secret",
+        save_password: authentication !== "windows",
+      }),
+    );
+  });
+
   it.each([
     { windows: false, desktop: true },
     { windows: true, desktop: false },

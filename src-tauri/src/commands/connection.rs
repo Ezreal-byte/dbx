@@ -1492,7 +1492,11 @@ async fn test_connection_with_info_impl(
     state: &Arc<AppState>,
     config: ConnectionConfig,
 ) -> Result<ConnectionTestResult, String> {
-    let config = if config.uses_mongodb_oidc() { config.canonicalized() } else { config };
+    let config = if config.uses_mongodb_oidc() || config.db_type == DatabaseType::SqlServer {
+        config.canonicalized()
+    } else {
+        config
+    };
     if config.db_type == DatabaseType::SqlServer {
         state.validate_connection_runtime_options(&config)?;
     }
