@@ -11484,11 +11484,12 @@ async fn get_object_source_once(
             } else {
                 let mut client = client.lock().await;
                 let result: db::ObjectSource = client
-                    .get_object_source_for_relation(
+                    .get_object_source_with_identity(
                         database,
                         schema,
                         name,
                         &object_type,
+                        signature,
                         relation_name,
                         agent_metadata_timeout(db_config.as_ref()),
                     )
